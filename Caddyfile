@@ -1,0 +1,39 @@
+{
+    admin off
+}
+
+# Automatically uses $DOMAIN if set, or defaults to port 80 (HTTP) on any IP
+{$DOMAIN::80} {
+    # Enable gzip / zstd compression
+    encode zstd gzip
+
+    # 1. Forward all API endpoints to FastAPI backend
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # 2. Forward WebSocket telemetry stream to FastAPI backend
+    handle /ws/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # 3. Forward all UI routes and static assets to Next.js frontend
+    handle {
+        reverse_proxy frontend:3000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+}

@@ -1,0 +1,2125 @@
+"use client";
+
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Play,
+  Pause,
+  Square,
+  Phone,
+  PhoneCall,
+  PhoneOff,
+  Layers,
+  Settings,
+  Database,
+  FileSpreadsheet,
+  Download,
+  Upload,
+  Trash2,
+  Plus,
+  Search,
+  ArrowLeft,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  AlertTriangle,
+  Volume2,
+  RefreshCw,
+  Sliders,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  ExternalLink,
+  FileText,
+  Radio,
+  Users
+} from "lucide-react";
+
+const getApiBase = () => {
+  if (typeof window !== "undefined") {
+    if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+    if ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && window.location.port === "3000") {
+      return "http://127.0.0.1:8000/api";
+    }
+    return `${window.location.origin}/api`;
+  }
+  return process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+};
+
+interface CampaignItem {
+  id: string;
+  name: string;
+  status: string;
+  live_status?: string;
+  concurrency: number;
+  ivr_id: string;
+  ivr_name: string;
+  api_key?: string;
+  did_mode: string;
+  single_did?: string;
+  inter_call_delay: number;
+  google_sheet_url?: string;
+  google_sheet_phone_col?: string;
+  google_sheet_name_col?: string;
+  total_leads: number;
+  completed_leads: number;
+  answered_leads: number;
+  missed_leads: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ChannelSlot {
+  channel_id: number;
+  state: "idle" | "dialing" | "connected" | "completed";
+  phone_number?: string;
+  name?: string;
+  did?: string;
+  duration: number;
+  dtmf?: string;
+  started_at?: number;
+}
+
+interface LeadItem {
+  id: string;
+  phone_number: string;
+  name: string;
+  status: string;
+  dtmf?: string;
+  duration: number;
+  call_id?: string;
+  ref_id?: string;
+  call_time?: string;
+  did_used?: string;
+  error_message?: string;
+}
+
+interface TrunkStatus {
+  total_capacity: number;
+  active_channels: number;
+  available_channels: number;
+  running_campaigns: number;
+  dids_count: number;
+}
+
+const DEFAULT_IVRS_FALLBACK = [
+  { id: 89733, name: "DTMF Test IVR", description: "Captures any digit pressed (0-9)", recording: "219915", default_api_key: "865fac0f-bed8-491c-aa22-59c55c94d00c" },
+  { id: 89718, name: "Generic Hindi All", description: "Hindi Voice Prompt Flow", recording: "219915", default_api_key: "865fac0f-bed8-491c-aa22-59c55c94d00c" },
+  { id: 89717, name: "Generic Bengali All", description: "Bengali Voice Prompt Flow", recording: "219914", default_api_key: "" },
+];
+
+const DEFAULT_ALL_DIDS = [
+  "917965561250", "917965561251", "917965561252", "917965561254", "917965561255",
+  "917965561256", "917965561257", "917965561258", "917965561259", "917965561260",
+  "917965561261", "917965561262", "917965561263", "917965561264", "917965561265",
+  "917965561266", "917965561267", "917965561268", "917965561269", "917965561270",
+  "917965561271", "917965561272", "917965561273", "917965561274", "917965561275",
+  "917965561276", "917965561277", "917965561278", "917965561279", "917965561280",
+  "917965561281", "917965561282", "917965561283", "917965561284", "917965561285",
+  "917965561286", "917965561287", "917965561288", "917965561289", "917965561290",
+  "917965561291", "917965561292", "917965561293", "917965561295"
+];
+
+export default function SmartfloDialerApp() {
+  const API_BASE = getApiBase();
+  // Navigation & View State
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [campaignTab, setCampaignTab] = useState<"overview" | "settings" | "leads" | "reports">("overview");
+
+  // System Trunk & Campaigns Data
+  const [trunkStatus, setTrunkStatus] = useState<TrunkStatus>({
+    total_capacity: 15,
+    active_channels: 0,
+    available_channels: 15,
+    running_campaigns: 0,
+    dids_count: 44
+  });
+  const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
+  const [activeCampaignDetail, setActiveCampaignDetail] = useState<any | null>(null);
+  const [activeSlots, setActiveSlots] = useState<ChannelSlot[]>([]);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  // Search & Filter for Dashboard
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Modals
+  const [isNewCampaignOpen, setIsNewCampaignOpen] = useState(false);
+  const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [actionMessage, setActionMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+
+  // New Campaign Form
+  const [newCampName, setNewCampName] = useState("");
+  const [newCampConcurrency, setNewCampConcurrency] = useState(5);
+  const [newCampIVRId, setNewCampIVRId] = useState("89733");
+  const [newCampIVRName, setNewCampIVRName] = useState("DTMF Test IVR");
+  const [newCampApiKey, setNewCampApiKey] = useState("865fac0f-bed8-491c-aa22-59c55c94d00c");
+  const [newCampDelay, setNewCampDelay] = useState(3);
+  const [newCampDidMode, setNewCampDidMode] = useState<"round_robin" | "single">("round_robin");
+  const [newCampSingleDid, setNewCampSingleDid] = useState("917965561295");
+
+  // Active Campaign Editable Settings
+  const [editConcurrency, setEditConcurrency] = useState(5);
+  const [editIVRId, setEditIVRId] = useState("89733");
+  const [editIVRName, setEditIVRName] = useState("DTMF Test IVR");
+  const [editApiKey, setEditApiKey] = useState("865fac0f-bed8-491c-aa22-59c55c94d00c");
+  const [editDelay, setEditDelay] = useState(3);
+  const [editDidMode, setEditDidMode] = useState("round_robin");
+  const [editSingleDid, setEditSingleDid] = useState("917965561295");
+
+  // Paginated Leads Table
+  const [leadsList, setLeadsList] = useState<LeadItem[]>([]);
+  const [leadsPage, setLeadsPage] = useState(1);
+  const [leadsPageSize, setLeadsPageSize] = useState(50);
+  const [leadsTotalCount, setLeadsTotalCount] = useState(0);
+  const [leadsTotalPages, setLeadsTotalPages] = useState(1);
+  const [leadsSearch, setLeadsSearch] = useState("");
+  const [leadsStatusFilter, setLeadsStatusFilter] = useState("all");
+  const [jumpPageInput, setJumpPageInput] = useState("");
+
+  // Ingestion inside Campaign
+  const [ingestTab, setIngestTab] = useState<"sheets" | "file" | "text">("sheets");
+  const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetData, setSheetData] = useState<{
+    title: string;
+    headers: string[];
+    row_count: number;
+    suggested_phone?: string;
+    suggested_name?: string;
+  } | null>(null);
+  const [selectedPhoneCol, setSelectedPhoneCol] = useState("");
+  const [selectedNameCol, setSelectedNameCol] = useState("");
+  const [rawTextNumbers, setRawTextNumbers] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Export State
+  const [exportFormat, setExportFormat] = useState<"xlsx" | "csv">("xlsx");
+  const [exportStatus, setExportStatus] = useState("all");
+  const [exportDTMF, setExportDTMF] = useState("all");
+
+  // IVR & Audio Library
+  const [availableIVRs, setAvailableIVRs] = useState<any[]>(DEFAULT_IVRS_FALLBACK);
+  const [availableRecordings, setAvailableRecordings] = useState<any[]>([]);
+  const [uploadAudioName, setUploadAudioName] = useState("");
+  const [uploadAudioFile, setUploadAudioFile] = useState<File | null>(null);
+  const [isAudioUploading, setIsAudioUploading] = useState(false);
+  const [allDIDs, setAllDIDs] = useState<string[]>(DEFAULT_ALL_DIDS);
+
+  const showNotification = (text: string, type: "success" | "error" | "info" = "info") => {
+    setActionMessage({ text, type });
+    setTimeout(() => setActionMessage(null), 4000);
+  };
+
+  // 1. Initial Load & Background Polling
+  useEffect(() => {
+    fetchTrunkStatus();
+    fetchCampaignsList();
+    fetchIVRs();
+    fetchRecordings();
+    fetchDIDs();
+
+    const interval = setInterval(() => {
+      fetchTrunkStatus();
+      fetchCampaignsList();
+      if (selectedCampaignId) {
+        fetchCampaignDetail(selectedCampaignId, false);
+        if (campaignTab === "leads") {
+          fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+        }
+      }
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, [selectedCampaignId, campaignTab, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
+
+  // 1B. Live WebSocket Telemetry Stream (Sub-second real-time push)
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+
+    const connectWebSocket = () => {
+      try {
+        const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+        const host = typeof window !== "undefined" ? window.location.hostname || "127.0.0.1" : "127.0.0.1";
+        const wsPort = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && window.location.port === "3000"
+          ? ":8000"
+          : (typeof window !== "undefined" && window.location.port && window.location.port !== "80" && window.location.port !== "443" ? `:${window.location.port}` : "");
+        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${protocol}//${host}${wsPort}/ws/telemetry`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "slot_change" && data.slot) {
+              setActiveSlots((prev) => {
+                const copy = [...prev];
+                const idx = copy.findIndex((s) => s.channel_id === data.slot.channel_id);
+                if (idx >= 0) {
+                  copy[idx] = data.slot;
+                } else {
+                  copy.push(data.slot);
+                }
+                return copy;
+              });
+            } else if (data.type === "slot_tick") {
+              setActiveSlots((prev) =>
+                prev.map((s) =>
+                  s.channel_id === data.channel_id ? { ...s, duration: data.duration } : s
+                )
+              );
+            } else if (data.type === "lead_completed") {
+              setLeadsList((prev) =>
+                prev.map((l) =>
+                  l.id === data.lead_id
+                    ? {
+                        ...l,
+                        status: data.status,
+                        duration: data.duration,
+                        dtmf: data.dtmf,
+                        call_id: data.call_id,
+                        did_used: data.did,
+                        call_time: data.call_time
+                      }
+                    : l
+                )
+              );
+              fetchTrunkStatus();
+              fetchCampaignsList();
+              if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          setWsConnected(false);
+          reconnectTimeout = setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = () => {
+          setWsConnected(false);
+        };
+      } catch {
+        setWsConnected(false);
+      }
+    };
+
+    connectWebSocket();
+
+    return () => {
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, [selectedCampaignId]);
+
+  // When active campaign changes, reset leads page and load campaign details
+  useEffect(() => {
+    if (selectedCampaignId) {
+      fetchCampaignDetail(selectedCampaignId, true);
+      setLeadsPage(1);
+      fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, leadsStatusFilter, leadsSearch);
+    }
+  }, [selectedCampaignId]);
+
+  // When leads pagination / filter changes
+  useEffect(() => {
+    if (selectedCampaignId) {
+      fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+    }
+  }, [leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
+
+  // API Callers
+  const fetchTrunkStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/trunk/status`);
+      if (res.ok) setTrunkStatus(await res.json());
+    } catch {}
+  };
+
+  const fetchCampaignsList = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/campaigns`);
+      if (res.ok) {
+        const data = await res.json();
+        setCampaigns(data.campaigns || []);
+      }
+    } catch {}
+  };
+
+  const fetchCampaignDetail = async (cid: string, syncForm = false) => {
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${cid}`);
+      if (res.ok) {
+        const data = await res.json();
+        setActiveCampaignDetail(data);
+        setActiveSlots(data.channel_slots || []);
+        // Only sync form state when explicitly requested (campaign switch or after save)
+        // This prevents 2.5s polling from wiping out user's active dropdown selections!
+        if (syncForm) {
+          setEditConcurrency(data.concurrency || 5);
+          setEditIVRId(data.ivr_id || "89733");
+          setEditIVRName(data.ivr_name || "DTMF Test IVR");
+          setEditApiKey(data.api_key || "865fac0f-bed8-491c-aa22-59c55c94d00c");
+          setEditDelay(data.inter_call_delay ?? 3);
+          setEditDidMode(data.did_mode || "round_robin");
+          setEditSingleDid(data.single_did || "917965561295");
+        }
+      }
+    } catch {}
+  };
+
+  const fetchCampaignLeads = async (
+    cid: string,
+    page: number,
+    pageSize: number,
+    status: string,
+    search: string
+  ) => {
+    try {
+      const query = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+        limit: String(pageSize),
+        status: status,
+        search: search.trim()
+      });
+      const res = await fetch(`${API_BASE}/campaigns/${cid}/leads?${query.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const items = data.items || data.leads || [];
+        setLeadsList(items);
+        setLeadsTotalCount(data.total_count ?? items.length);
+        setLeadsTotalPages(data.total_pages ?? Math.max(1, Math.ceil((data.total_count ?? items.length) / pageSize)));
+      }
+    } catch {}
+  };
+
+  const fetchIVRs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/ivrs`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ivrs && data.ivrs.length > 0) {
+          setAvailableIVRs(data.ivrs);
+          return;
+        }
+      }
+      setAvailableIVRs(DEFAULT_IVRS_FALLBACK);
+    } catch {
+      setAvailableIVRs(DEFAULT_IVRS_FALLBACK);
+    }
+  };
+
+  const fetchRecordings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/recordings`);
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableRecordings(data.recordings || []);
+      }
+    } catch {}
+  };
+
+  const fetchDIDs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/dids`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = data.all_dids || data.dids || [];
+        if (Array.isArray(list) && list.length > 0) {
+          setAllDIDs(list);
+          return;
+        }
+      }
+      setAllDIDs(DEFAULT_ALL_DIDS);
+    } catch {
+      setAllDIDs(DEFAULT_ALL_DIDS);
+    }
+  };
+
+  // Campaign Actions
+  const handleCreateCampaign = async () => {
+    if (!newCampName.trim()) {
+      showNotification("Please enter a campaign name.", "error");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaigns`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newCampName.trim(),
+          concurrency: newCampConcurrency,
+          ivr_id: newCampIVRId,
+          ivr_name: newCampIVRName,
+          api_key: newCampApiKey.trim() || "865fac0f-bed8-491c-aa22-59c55c94d00c",
+          did_mode: newCampDidMode,
+          single_did: newCampSingleDid,
+          inter_call_delay: newCampDelay
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Campaign "${data.campaign.name}" created!`, "success");
+        setIsNewCampaignOpen(false);
+        setNewCampName("");
+        await fetchCampaignsList();
+        setSelectedCampaignId(data.campaign.id);
+        setCampaignTab("overview");
+      } else {
+        showNotification(data.detail || "Failed to create campaign", "error");
+      }
+    } catch (err: any) {
+      showNotification(`Error: ${err?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUpdateCampaignSettings = async () => {
+    if (!selectedCampaignId) return;
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concurrency: editConcurrency,
+          ivr_id: editIVRId,
+          ivr_name: editIVRName,
+          api_key: editApiKey.trim(),
+          inter_call_delay: editDelay,
+          did_mode: editDidMode,
+          single_did: editSingleDid
+        })
+      });
+      if (res.ok) {
+        showNotification("Campaign settings updated successfully!", "success");
+        await fetchCampaignDetail(selectedCampaignId, true);
+        await fetchCampaignsList();
+      } else {
+        const err = await res.json();
+        showNotification(err.detail || "Failed to update settings", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCampaignControl = async (cid: string, action: "start" | "pause" | "resume" | "stop") => {
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${cid}/${action}`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Campaign ${action.toUpperCase()} signal sent.`, "success");
+        fetchCampaignsList();
+        if (selectedCampaignId === cid) fetchCampaignDetail(cid, false);
+      } else {
+        showNotification(data.message || data.detail || `Failed to ${action} campaign`, "error");
+      }
+    } catch (err: any) {
+      showNotification(`Error: ${err?.message}`, "error");
+    }
+  };
+
+  const handleDeleteCampaign = async (cid: string) => {
+    if (!confirm("Are you sure you want to permanently delete this campaign and all its call history?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${cid}`, { method: "DELETE" });
+      if (res.ok) {
+        showNotification("Campaign deleted.", "info");
+        if (selectedCampaignId === cid) setSelectedCampaignId(null);
+        fetchCampaignsList();
+      }
+    } catch {}
+  };
+
+  const handleRetryMissed = async (cid: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${cid}/retry-missed`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Reset ${data.reset_count} missed calls to PENDING.`, "success");
+        fetchCampaignDetail(cid, false);
+        fetchCampaignLeads(cid, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+      }
+    } catch {}
+  };
+
+  const handleDeleteLead = async (leadId: string, phone: string) => {
+    if (!selectedCampaignId) return;
+    if (!confirm(`Are you sure you want to remove ${phone} from this campaign?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/leads/${leadId}`, {
+        method: "DELETE"
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Removed ${phone} from leads list.`, "info");
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+      } else {
+        showNotification(data.detail || data.message || "Failed to delete lead.", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    }
+  };
+
+  const handleClearAllLeads = async () => {
+    if (!selectedCampaignId) return;
+    if (!confirm("Are you sure you want to delete ALL leads from this campaign? This action cannot be undone.")) return;
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/clear`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification("All leads have been cleared from this campaign.", "info");
+        setLeadsPage(1);
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+      } else {
+        showNotification(data.detail || data.message || "Failed to clear leads.", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    }
+  };
+
+  // Ingestion Handlers
+  const handleInspectSheet = async () => {
+    if (!selectedCampaignId || !sheetUrl.trim()) {
+      showNotification("Please provide a valid Google Sheet URL.", "error");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/sheets/inspect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sheet_url: sheetUrl.trim() })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSheetData(data);
+        setSelectedPhoneCol(data.suggested_phone || data.headers[0] || "");
+        setSelectedNameCol(data.suggested_name || "");
+        showNotification(`Sheet connected: "${data.title}" (${data.row_count} rows found)`, "success");
+      } else {
+        showNotification(data.message || data.detail || "Failed to read Google Sheet.", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportSheet = async () => {
+    if (!selectedCampaignId || !sheetUrl.trim() || !selectedPhoneCol) {
+      showNotification("Please inspect sheet and select the Phone column.", "error");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      let res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/sheets/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sheet_url: sheetUrl.trim(),
+          phone_column: selectedPhoneCol,
+          name_column: selectedNameCol || null
+        })
+      });
+      if (res.status === 404) {
+        res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/import-sheet`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sheet_url: sheetUrl.trim(),
+            phone_column: selectedPhoneCol,
+            name_column: selectedNameCol || null
+          })
+        });
+      }
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const count = data.imported_leads ?? data.count ?? 0;
+        showNotification(`Imported ${count} leads from Google Sheets!`, "success");
+        setSheetData(null);
+        setSheetUrl("");
+        setLeadsPage(1);
+        setLeadsStatusFilter("all");
+        setLeadsSearch("");
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+      } else {
+        showNotification(data.detail || data.message || "Import failed.", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportRawText = async () => {
+    if (!selectedCampaignId || !rawTextNumbers.trim()) {
+      showNotification("Please paste at least one phone number.", "error");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      let res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/import/text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_text: rawTextNumbers.trim() })
+      });
+      if (res.status === 404) {
+        res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/import-text`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ raw_text: rawTextNumbers.trim() })
+        });
+      }
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const count = data.imported_leads ?? data.count ?? 0;
+        showNotification(`Successfully imported ${count} phone numbers!`, "success");
+        setRawTextNumbers("");
+        setLeadsPage(1);
+        setLeadsStatusFilter("all");
+        setLeadsSearch("");
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+      } else {
+        showNotification(data.detail || data.message || "Failed to import numbers.", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedCampaignId) return;
+    setIsLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      let res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/import/file`, {
+        method: "POST",
+        body: formData
+      });
+      if (res.status === 404) {
+        res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/upload-file`, {
+          method: "POST",
+          body: formData
+        });
+      }
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const count = data.imported_leads ?? data.count ?? 0;
+        showNotification(`File uploaded: Added ${count} leads.`, "success");
+        setLeadsPage(1);
+        setLeadsStatusFilter("all");
+        setLeadsSearch("");
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+      } else {
+        showNotification(data.detail || data.message || "Failed to process file.", "error");
+      }
+    } catch (err: any) {
+      showNotification(`Upload error: ${err?.message}`, "error");
+    } finally {
+      setIsLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // Export Download Trigger
+  const handleExportDownload = () => {
+    if (!selectedCampaignId) return;
+    const url = `${API_BASE}/campaigns/${selectedCampaignId}/export?format=${exportFormat}&status=${exportStatus}&dtmf=${exportDTMF}`;
+    window.open(url, "_blank");
+    showNotification(`Downloading ${exportFormat.toUpperCase()} report...`, "success");
+  };
+
+  // Audio Upload
+  const handleUploadAudio = async () => {
+    if (!uploadAudioName.trim() || !uploadAudioFile) {
+      showNotification("Please provide audio name and file.", "error");
+      return;
+    }
+    setIsAudioUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", uploadAudioFile);
+      formData.append("audio_name", uploadAudioName.trim());
+      const res = await fetch(`${API_BASE}/recordings/upload`, { method: "POST", body: formData });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Audio uploaded to Smartflo CDN! ID: #${data.recording_id}`, "success");
+        fetchRecordings();
+        setUploadAudioName("");
+        setUploadAudioFile(null);
+        setIsAudioModalOpen(false);
+      } else {
+        showNotification(data.message || "Upload failed", "error");
+      }
+    } catch (err: any) {
+      showNotification(`Error: ${err?.message}`, "error");
+    } finally {
+      setIsAudioUploading(false);
+    }
+  };
+
+  // Filtered campaigns for dashboard
+  const filteredCampaigns = campaigns.filter(c =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.ivr_name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const activeCamp = campaigns.find(c => c.id === selectedCampaignId) || activeCampaignDetail;
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased flex flex-col">
+      {/* Toast Notification */}
+      {actionMessage && (
+        <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-md text-xs font-medium transition-all ${
+          actionMessage.type === "success" ? "bg-emerald-50 text-emerald-800 border-emerald-200" :
+          actionMessage.type === "error" ? "bg-rose-50 text-rose-800 border-rose-200" :
+          "bg-blue-50 text-blue-800 border-blue-200"
+        }`}>
+          {actionMessage.type === "success" && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
+          {actionMessage.type === "error" && <XCircle className="w-4 h-4 text-rose-600" />}
+          {actionMessage.type === "info" && <Clock className="w-4 h-4 text-blue-600" />}
+          {actionMessage.text}
+        </div>
+      )}
+
+      {/* TOP HEADER - Clean, Modern Shadcn Style */}
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between shadow-xs">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => setSelectedCampaignId(null)}>
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-xs">
+              <PhoneCall className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="font-bold text-base tracking-tight text-slate-900 block leading-tight">Smartflo Dialer</span>
+              <span className="text-[11px] text-slate-500 font-medium leading-none">Tata Tele Business Services</span>
+            </div>
+          </div>
+
+          <div className="h-5 w-px bg-slate-200 mx-2 hidden sm:block" />
+
+          {/* Telemetry Badges */}
+          <div className="hidden sm:flex items-center gap-3">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700">
+              <span className={`w-2 h-2 rounded-full ${trunkStatus.active_channels > 0 ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+              <span className="font-semibold text-slate-900">{trunkStatus.active_channels}</span> / {trunkStatus.total_capacity} Trunk Channels Busy
+            </div>
+
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-xs text-slate-600">
+              <Phone className="w-3 h-3 text-slate-500" />
+              <span>44 Caller IDs (DIDs)</span>
+            </div>
+
+            <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+              wsConnected ? "bg-emerald-50 text-emerald-800 border-emerald-200" : "bg-amber-50 text-amber-800 border-amber-200"
+            }`}>
+              <Radio className={`w-3.5 h-3.5 ${wsConnected ? "text-emerald-600 animate-pulse" : "text-amber-600"}`} />
+              <span className="font-semibold">{wsConnected ? "Live Telemetry Push" : "Fast 1s Polling"}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Header Items */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsAudioModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 shadow-2xs transition-colors"
+          >
+            <Volume2 className="w-3.5 h-3.5 text-slate-500" />
+            <span>Audio Studio</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setNewCampConcurrency(Math.min(5, Math.max(1, trunkStatus.available_channels || 5)));
+              setIsNewCampaignOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shadow-xs transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Campaign</span>
+          </button>
+        </div>
+      </header>
+
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8">
+        {/* ======================================================== */}
+        {/* VIEW 1: CAMPAIGNS DASHBOARD (LIST OF CAMPAIGNS)           */}
+        {/* ======================================================== */}
+        {selectedCampaignId === null ? (
+          <div className="space-y-6">
+            {/* Overview Banner */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-200">
+              <div>
+                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Campaigns</h1>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Manage concurrent outbound auto-dialing campaigns on your 15-channel Smartflo trunk.
+                </p>
+              </div>
+
+              {/* Search filter */}
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search campaigns or IVRs..."
+                    className="pl-9 pr-4 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 w-64 shadow-2xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Stats Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                <span className="text-xs text-slate-500 font-medium">Total Campaigns</span>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{campaigns.length}</p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                <span className="text-xs text-slate-500 font-medium">Running Now</span>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-2xl font-bold text-emerald-600">
+                    {campaigns.filter(c => (c.live_status || c.status) === "running").length}
+                  </span>
+                  <span className="text-xs text-slate-400">active</span>
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                <span className="text-xs text-slate-500 font-medium">Total Leads Loaded</span>
+                <p className="text-2xl font-bold text-slate-900 mt-1">
+                  {campaigns.reduce((acc, c) => acc + (c.total_leads || 0), 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                <span className="text-xs text-slate-500 font-medium">Trunk Free Capacity</span>
+                <p className="text-2xl font-bold text-indigo-600 mt-1">
+                  {trunkStatus.available_channels} <span className="text-xs font-normal text-slate-500">of 15 channels</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Campaigns Card Grid */}
+            {filteredCampaigns.length === 0 ? (
+              <div className="bg-white border border-slate-200 border-dashed rounded-xl p-12 text-center shadow-2xs">
+                <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400 mb-3">
+                  <Layers className="w-6 h-6" />
+                </div>
+                <h3 className="text-sm font-semibold text-slate-900">No campaigns found</h3>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  Create your first outbound campaign to upload numbers, assign IVR audio, and start auto-dialing.
+                </p>
+                <button
+                  onClick={() => setIsNewCampaignOpen(true)}
+                  className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 shadow-xs"
+                >
+                  <Plus className="w-4 h-4" />
+                  Create Campaign
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {filteredCampaigns.map((camp) => {
+                  const status = camp.live_status || camp.status || "idle";
+                  const total = camp.total_leads || 0;
+                  const answered = camp.answered_leads || 0;
+                  const missed = camp.missed_leads || 0;
+                  const completed = camp.completed_leads || 0;
+                  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+                  return (
+                    <div
+                      key={camp.id}
+                      className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs hover:shadow-md transition-shadow flex flex-col justify-between"
+                    >
+                      <div>
+                        {/* Card Header */}
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="font-semibold text-base text-slate-900 tracking-tight leading-snug">
+                              {camp.name}
+                            </h3>
+                            <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
+                              <Volume2 className="w-3.5 h-3.5 text-indigo-500" />
+                              <span className="font-medium text-slate-700">{camp.ivr_name}</span>
+                            </div>
+                          </div>
+
+                          {/* Status Badge */}
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                            status === "running" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                            status === "paused" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                            status === "finished" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                            "bg-slate-100 text-slate-700 border-slate-200"
+                          }`}>
+                            {status.toUpperCase()}
+                          </span>
+                        </div>
+
+                        {/* Specs Pill */}
+                        <div className="flex items-center gap-2 mt-4 text-[11px] text-slate-500">
+                          <span className="bg-slate-100 px-2 py-0.5 rounded font-mono font-medium text-slate-700">
+                            {camp.concurrency} Trunk Channels
+                          </span>
+                          <span className="bg-slate-100 px-2 py-0.5 rounded font-mono font-medium text-slate-700">
+                            {camp.did_mode === "single" ? `DID: ...${(camp.single_did || "").slice(-4)}` : "44 DIDs Rotation"}
+                          </span>
+                        </div>
+
+                        {/* Progress Bar */}
+                        <div className="mt-4">
+                          <div className="flex justify-between text-xs text-slate-500 mb-1">
+                            <span>Progress</span>
+                            <span className="font-medium text-slate-700">{percent}% ({completed}/{total})</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-indigo-600 rounded-full transition-all duration-500"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Metrics Mini-Row */}
+                        <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-100 text-center text-xs">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">ANSWERED</span>
+                            <span className="font-semibold text-emerald-600">{answered}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">MISSED</span>
+                            <span className="font-semibold text-rose-500">{missed}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">REMAINING</span>
+                            <span className="font-semibold text-slate-700">{Math.max(0, total - completed)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Bottom Actions */}
+                      <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {status !== "running" ? (
+                            <button
+                              onClick={() => handleCampaignControl(camp.id, status === "paused" ? "resume" : "start")}
+                              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
+                              title="Start / Resume Campaign"
+                            >
+                              <Play className="w-4 h-4 text-emerald-600 fill-emerald-600" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleCampaignControl(camp.id, "pause")}
+                              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700"
+                              title="Pause Calling"
+                            >
+                              <Pause className="w-4 h-4 text-amber-600 fill-amber-600" />
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => handleDeleteCampaign(camp.id)}
+                            className="p-1.5 rounded-lg border border-slate-200 hover:bg-rose-50 text-slate-400 hover:text-rose-600"
+                            title="Delete Campaign"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Open Campaign Detail (Primary Enter Action) */}
+                        <button
+                          onClick={() => {
+                            setSelectedCampaignId(camp.id);
+                            setCampaignTab("overview");
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors"
+                        >
+                          <span>Open Campaign</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ======================================================== */
+          /* VIEW 2: CAMPAIGN DETAIL VIEW (ENTERED CAMPAIGN)          */
+          /* ======================================================== */
+          <div className="space-y-6">
+            {/* Top Breadcrumb & Controls */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedCampaignId(null)}
+                    className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 transition-colors shadow-2xs"
+                    title="Back to all campaigns"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+
+                  <div>
+                    <div className="flex items-center gap-2.5">
+                      <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                        {activeCamp?.name || "Campaign Details"}
+                      </h1>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                        (activeCamp?.live_status || activeCamp?.status) === "running" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                        (activeCamp?.live_status || activeCamp?.status) === "paused" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                        "bg-slate-100 text-slate-700 border-slate-200"
+                      }`}>
+                        {((activeCamp?.live_status || activeCamp?.status) || "IDLE").toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+                      <span>IVR: <strong className="text-slate-700">{activeCamp?.ivr_name}</strong></span>
+                      <span>•</span>
+                      <span>Trunk: <strong className="text-slate-700">{activeCamp?.concurrency} channels</strong></span>
+                      <span>•</span>
+                      <span>Pacing: <strong className="text-slate-700">{activeCamp?.inter_call_delay}s</strong></span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Call Control Buttons */}
+                <div className="flex items-center gap-2">
+                  {(activeCamp?.live_status || activeCamp?.status) !== "running" ? (
+                    <button
+                      onClick={() => handleCampaignControl(activeCamp.id, (activeCamp?.live_status || activeCamp?.status) === "paused" ? "resume" : "start")}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition-colors"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-white" />
+                      <span>Start Calling</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleCampaignControl(activeCamp.id, "pause")}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-xs font-semibold shadow-xs transition-colors"
+                      >
+                        <Pause className="w-3.5 h-3.5 fill-white" />
+                        <span>Pause</span>
+                      </button>
+                      <button
+                        onClick={() => handleCampaignControl(activeCamp.id, "stop")}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-xs transition-colors"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-white" />
+                        <span>Stop</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    onClick={() => handleRetryMissed(activeCamp.id)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-2xs"
+                    title="Retry all calls marked as Missed"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Retry Missed</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 Clean Tabs */}
+              <div className="flex items-center gap-1 border-t border-slate-100 mt-5 pt-3">
+                <button
+                  onClick={() => setCampaignTab("overview")}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    campaignTab === "overview"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Overview & Live Telemetry</span>
+                </button>
+
+                <button
+                  onClick={() => setCampaignTab("leads")}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    campaignTab === "leads"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>Add Data & Leads ({activeCamp?.total_leads || 0})</span>
+                </button>
+
+                <button
+                  onClick={() => setCampaignTab("settings")}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    campaignTab === "settings"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Configure IVR & Settings</span>
+                </button>
+
+                <button
+                  onClick={() => setCampaignTab("reports")}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    campaignTab === "reports"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Reports & Export</span>
+                </button>
+              </div>
+            </div>
+
+            {/* TAB CONTENT 1: OVERVIEW & LIVE TRUNK TELEMETRY */}
+            {campaignTab === "overview" && (
+              <div className="space-y-6">
+                {/* 4 KPI Metrics */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                    <span className="text-xs text-slate-500 font-medium">Total Leads</span>
+                    <p className="text-2xl font-bold text-slate-900 mt-1">{activeCamp?.total_leads || 0}</p>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                    <span className="text-xs text-slate-500 font-medium">Answered (Talk Time &gt; 0)</span>
+                    <p className="text-2xl font-bold text-emerald-600 mt-1">{activeCamp?.answered_leads || 0}</p>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                    <span className="text-xs text-slate-500 font-medium">Missed / Unanswered</span>
+                    <p className="text-2xl font-bold text-rose-500 mt-1">{activeCamp?.missed_leads || 0}</p>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
+                    <span className="text-xs text-slate-500 font-medium">Connect Rate</span>
+                    <p className="text-2xl font-bold text-indigo-600 mt-1">
+                      {activeCamp?.total_leads > 0
+                        ? `${Math.round(((activeCamp.answered_leads || 0) / (activeCamp.completed_leads || 1)) * 100)}%`
+                        : "0%"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Live Channels Grid for this campaign */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-indigo-600" />
+                      <h2 className="text-sm font-semibold text-slate-900">
+                        Live Trunk Channels ({activeSlots.filter(s => s.state !== "idle").length} of {activeSlots.length} active)
+                      </h2>
+                    </div>
+                    <span className="text-xs text-slate-400">Updates live via Smartflo PBX</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {activeSlots.map((slot) => {
+                      const isBusy = slot.state !== "idle";
+                      return (
+                        <div
+                          key={slot.channel_id}
+                          className={`p-3.5 rounded-lg border transition-all ${
+                            slot.state === "connected"
+                              ? "bg-emerald-50/70 border-emerald-200"
+                              : slot.state === "dialing"
+                              ? "bg-amber-50/70 border-amber-200 animate-pulse"
+                              : "bg-slate-50/60 border-slate-200 text-slate-400"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[11px] font-semibold mb-1">
+                            <span className="text-slate-700">CH #{slot.channel_id + 1}</span>
+                            <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+                              slot.state === "connected" ? "bg-emerald-200/60 text-emerald-800" :
+                              slot.state === "dialing" ? "bg-amber-200/60 text-amber-800" :
+                              "bg-slate-200 text-slate-600"
+                            }`}>
+                              {slot.state.toUpperCase()}
+                            </span>
+                          </div>
+
+                          {isBusy ? (
+                            <div className="space-y-0.5 mt-2">
+                              <p className="text-xs font-mono font-bold text-slate-900">{slot.phone_number}</p>
+                              {slot.name && <p className="text-[11px] text-slate-600 truncate">{slot.name}</p>}
+                              <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
+                                <span>DID: ...{(slot.did || "").slice(-4)}</span>
+                                <span className="font-semibold text-slate-700">{slot.duration}s</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="py-2 text-center text-xs text-slate-400">Idle slot</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT 2: CONFIGURE IVR & CAMPAIGN SETTINGS */}
+            {campaignTab === "settings" && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-6">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Campaign & Telephony Configuration</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Configure which IVR audio flows play, assign dedicated Smartflo Support routing keys, and tune channel allocation.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                  {/* IVR Selection */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Destination IVR Audio Flow
+                    </label>
+                    <select
+                      value={editIVRId}
+                      onChange={(e) => {
+                        const sel = availableIVRs.find(i => String(i.id) === e.target.value);
+                        setEditIVRId(e.target.value);
+                        if (sel) {
+                          setEditIVRName(sel.name);
+                          if (sel.default_api_key) setEditApiKey(sel.default_api_key);
+                        }
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      {availableIVRs.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.name} (ID #{i.id})
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      Controls which audio recording and DTMF keypad menu the customer hears.
+                    </span>
+                  </div>
+
+                  {/* Smartflo Routing Key */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Smartflo Support Routing Key (API Key)
+                      </label>
+                      <span className="text-[10px] text-indigo-600 font-medium">Binds audio on Tata switch</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={editApiKey}
+                      onChange={(e) => setEditApiKey(e.target.value)}
+                      placeholder="e.g. 865fac0f-bed8-491c-aa22-59c55c94d00c"
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      The Click-to-Call Support API Key from Smartflo Portal mapped to this IVR.
+                    </span>
+                  </div>
+
+                  {/* Channel Allocation */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Trunk Channel Allocation
+                      </label>
+                      <span className="text-xs font-bold text-indigo-600 font-mono">{editConcurrency} channels</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max={15}
+                      value={editConcurrency}
+                      onChange={(e) => setEditConcurrency(Number(e.target.value))}
+                      className="w-full accent-indigo-600 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      Max calls placed concurrently for this campaign (total trunk cap: 15 channels).
+                    </span>
+                  </div>
+
+                  {/* Pacing Delay */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Inter-Call Pacing Delay (Seconds)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="30"
+                      value={editDelay}
+                      onChange={(e) => setEditDelay(Number(e.target.value))}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      Cooldown buffer before a freed channel dials the next lead.
+                    </span>
+                  </div>
+
+                  {/* Caller ID Mode */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Caller ID (DID) Strategy
+                    </label>
+                    <select
+                      value={editDidMode}
+                      onChange={(e) => setEditDidMode(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="round_robin">Round-Robin Rotation (across all 44 DIDs)</option>
+                      <option value="single">Fixed Single DID Number</option>
+                    </select>
+                  </div>
+
+                  {editDidMode === "single" && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Select Single DID (Caller ID)
+                        </label>
+                        <span className="text-[10px] text-slate-500 font-medium">{allDIDs.length} DIDs Available</span>
+                      </div>
+                      <select
+                        value={editSingleDid}
+                        onChange={(e) => setEditSingleDid(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                      >
+                        {allDIDs.map((d, idx) => (
+                          <option key={d} value={d}>+{d} (DID #{idx + 1})</option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] text-slate-500 mt-1 block">
+                        All calls in this campaign will use this specific outbound Caller ID.
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="text-xs">
+                    {activeCampaignDetail && (
+                      activeCampaignDetail.did_mode !== editDidMode ||
+                      activeCampaignDetail.single_did !== editSingleDid ||
+                      activeCampaignDetail.concurrency !== editConcurrency ||
+                      activeCampaignDetail.api_key !== editApiKey ||
+                      activeCampaignDetail.ivr_id !== editIVRId ||
+                      activeCampaignDetail.inter_call_delay !== editDelay
+                    ) ? (
+                      <span className="inline-flex items-center gap-1.5 text-amber-700 font-medium bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                        Unsaved changes - click &quot;Save Configuration&quot; to apply
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">Settings synchronized with campaign database.</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleUpdateCampaignSettings}
+                    disabled={isLoading}
+                    className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition-colors disabled:opacity-50"
+                  >
+                    <Settings className="w-4 h-4" />
+                    <span>{isLoading ? "Saving..." : "Save Configuration"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT 3: ADD DATA & LEADS TABLE */}
+            {campaignTab === "leads" && (
+              <div className="space-y-6">
+                {/* INGESTION SECTION */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900">Add Leads & Data Source</h2>
+                      <p className="text-xs text-slate-500">Sync with Google Sheets, upload CSV/Excel files, or paste numbers.</p>
+                    </div>
+
+                    {/* Sub-tabs */}
+                    <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+                      <button
+                        onClick={() => setIngestTab("sheets")}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                          ingestTab === "sheets" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                        }`}
+                      >
+                        Google Sheets
+                      </button>
+                      <button
+                        onClick={() => setIngestTab("file")}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                          ingestTab === "file" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                        }`}
+                      >
+                        CSV / Excel File
+                      </button>
+                      <button
+                        onClick={() => setIngestTab("text")}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                          ingestTab === "text" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                        }`}
+                      >
+                        Paste Numbers
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 1. Google Sheets */}
+                  {ingestTab === "sheets" && (
+                    <div className="space-y-4">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={sheetUrl}
+                          onChange={(e) => setSheetUrl(e.target.value)}
+                          placeholder="Paste Google Sheets link (e.g. https://docs.google.com/spreadsheets/d/...)"
+                          className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                        />
+                        <button
+                          onClick={handleInspectSheet}
+                          disabled={isLoading}
+                          className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 disabled:opacity-50"
+                        >
+                          {isLoading ? "Inspecting..." : "Connect Sheet"}
+                        </button>
+                      </div>
+
+                      <div className="flex items-start gap-2 p-3 bg-indigo-50/60 border border-indigo-100 rounded-lg text-xs text-indigo-900">
+                        <span className="font-semibold text-indigo-700 shrink-0">💡 Zero Setup:</span>
+                        <span>In Google Sheets, click <strong>Share</strong> &rarr; change General Access to <strong>&quot;Anyone with the link can view&quot;</strong>, then paste the link above. It connects instantly with zero cloud setup!</span>
+                      </div>
+
+                      {sheetData && (
+                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+                          <div className="flex items-center justify-between text-xs font-medium text-slate-700">
+                            <span>Found {sheetData.row_count} rows in "{sheetData.title}"</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Phone Column (Required):</label>
+                              <select
+                                value={selectedPhoneCol}
+                                onChange={(e) => setSelectedPhoneCol(e.target.value)}
+                                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900"
+                              >
+                                {sheetData.headers.map(h => (
+                                  <option key={h} value={h}>{h}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Customer Name Column (Optional):</label>
+                              <select
+                                value={selectedNameCol}
+                                onChange={(e) => setSelectedNameCol(e.target.value)}
+                                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900"
+                              >
+                                <option value="">-- None --</option>
+                                {sheetData.headers.map(h => (
+                                  <option key={h} value={h}>{h}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={handleImportSheet}
+                            disabled={isLoading}
+                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-lg shadow-xs"
+                          >
+                            Import {sheetData.row_count} Leads into Campaign
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 2. File Upload */}
+                  {ingestTab === "file" && (
+                    <div className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center bg-slate-50/50 hover:bg-slate-50 transition-colors">
+                      <FileSpreadsheet className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                      <p className="text-xs font-semibold text-slate-700">Upload CSV or Excel file</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Drag and drop or browse your file (up to 50,000 numbers)</p>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept=".csv, .xlsx, .xls"
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isLoading}
+                        className="mt-3 inline-flex items-center gap-1.5 px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-medium hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Select File</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 3. Paste Numbers */}
+                  {ingestTab === "text" && (
+                    <div className="space-y-3">
+                      <textarea
+                        rows={4}
+                        value={rawTextNumbers}
+                        onChange={(e) => setRawTextNumbers(e.target.value)}
+                        placeholder="Paste phone numbers separated by commas, tabs, or newlines (e.g. +918695911105, 9876543210)..."
+                        className="w-full bg-white border border-slate-200 rounded-lg p-3 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                      />
+                      <button
+                        onClick={handleImportRawText}
+                        disabled={isLoading || !rawTextNumbers.trim()}
+                        className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        Import Pasted Numbers
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* PAGINATED LEADS TABLE */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                  {/* Table Toolbar */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                        <input
+                          type="text"
+                          value={leadsSearch}
+                          onChange={(e) => {
+                            setLeadsSearch(e.target.value);
+                            setLeadsPage(1);
+                          }}
+                          placeholder="Search phone or name..."
+                          className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 w-52 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <select
+                        value={leadsStatusFilter}
+                        onChange={(e) => {
+                          setLeadsStatusFilter(e.target.value);
+                          setLeadsPage(1);
+                        }}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="completed">Answered</option>
+                        <option value="missed">Missed</option>
+                        <option value="failed">Failed</option>
+                      </select>
+
+                      <button
+                        onClick={() => {
+                          if (selectedCampaignId) {
+                            fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+                            showNotification("Leads list refreshed.", "info");
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-colors text-xs font-medium"
+                        title="Refresh Leads Table"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Refresh</span>
+                      </button>
+
+                      {leadsTotalCount > 0 && (
+                        <button
+                          onClick={handleClearAllLeads}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition-colors text-xs font-medium"
+                          title="Delete all leads from this campaign"
+                        >
+                          <Trash2 className="w-3 h-3 text-rose-600" />
+                          <span>Clear All</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <span>Show:</span>
+                      <select
+                        value={leadsPageSize}
+                        onChange={(e) => {
+                          setLeadsPageSize(Number(e.target.value));
+                          setLeadsPage(1);
+                        }}
+                        className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-700"
+                      >
+                        <option value={25}>25 per page</option>
+                        <option value={50}>50 per page</option>
+                        <option value={100}>100 per page</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Table Component */}
+                  <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                        <tr>
+                          <th className="py-2.5 px-3">#</th>
+                          <th className="py-2.5 px-3">Phone Number</th>
+                          <th className="py-2.5 px-3">Name</th>
+                          <th className="py-2.5 px-3">Status</th>
+                          <th className="py-2.5 px-3">Talk Duration</th>
+                          <th className="py-2.5 px-3">DTMF Key</th>
+                          <th className="py-2.5 px-3">Caller DID</th>
+                          <th className="py-2.5 px-3">Call Time</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {leadsList.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="py-8 text-center text-slate-400">
+                              No leads found. Use the import options above to add data.
+                            </td>
+                          </tr>
+                        ) : (
+                          leadsList.map((lead, idx) => (
+                            <tr key={lead.id} className="hover:bg-slate-50/80 transition-colors">
+                              <td className="py-2.5 px-3 text-slate-400 font-mono">
+                                {(leadsPage - 1) * leadsPageSize + idx + 1}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono font-medium text-slate-900">
+                                {lead.phone_number}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-600">
+                                {lead.name || "—"}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                                  lead.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                                  lead.status === "missed" ? "bg-rose-50 text-rose-700 border-rose-200" :
+                                  lead.status === "dialing" || lead.status === "connected" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                                  "bg-slate-100 text-slate-600 border-slate-200"
+                                }`}>
+                                  {lead.status.toUpperCase()}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-slate-700">
+                                {lead.duration > 0 ? `${lead.duration}s` : "0s"}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {lead.dtmf !== null && lead.dtmf !== undefined ? (
+                                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold font-mono text-xs">
+                                    {lead.dtmf}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300">—</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px]">
+                                {lead.did_used ? `...${lead.did_used.slice(-4)}` : "—"}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+                                {lead.call_time || "—"}
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  onClick={() => handleDeleteLead(lead.id, lead.phone_number)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                  title={`Remove ${lead.phone_number}`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination Controls */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-500 pt-2">
+                    <div>
+                      Showing {(leadsPage - 1) * leadsPageSize + (leadsList.length > 0 ? 1 : 0)} to{" "}
+                      {Math.min(leadsPage * leadsPageSize, leadsTotalCount)} of {leadsTotalCount} leads
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setLeadsPage(1)}
+                        disabled={leadsPage <= 1}
+                        className="p-1.5 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        <ChevronsLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setLeadsPage(p => Math.max(1, p - 1))}
+                        disabled={leadsPage <= 1}
+                        className="p-1.5 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+
+                      <span className="px-2 font-medium text-slate-700">
+                        Page {leadsPage} of {leadsTotalPages}
+                      </span>
+
+                      <button
+                        onClick={() => setLeadsPage(p => Math.min(leadsTotalPages, p + 1))}
+                        disabled={leadsPage >= leadsTotalPages}
+                        className="p-1.5 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setLeadsPage(leadsTotalPages)}
+                        disabled={leadsPage >= leadsTotalPages}
+                        className="p-1.5 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        <ChevronsRight className="w-3.5 h-3.5" />
+                      </button>
+
+                      <div className="flex items-center gap-1 ml-2">
+                        <input
+                          type="number"
+                          placeholder="Jump"
+                          value={jumpPageInput}
+                          onChange={(e) => setJumpPageInput(e.target.value)}
+                          className="w-14 px-2 py-1 bg-white border border-slate-200 rounded text-center text-xs text-slate-800"
+                        />
+                        <button
+                          onClick={() => {
+                            const p = parseInt(jumpPageInput);
+                            if (p >= 1 && p <= leadsTotalPages) setLeadsPage(p);
+                            setJumpPageInput("");
+                          }}
+                          className="px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-xs text-slate-700 font-medium"
+                        >
+                          Go
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT 4: REPORTS & EXPORT */}
+            {campaignTab === "reports" && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-6">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Campaign Reports & Data Export</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Download detailed call records with customer talk time, CDR call IDs, DTMF keypad responses, and delivery status.
+                  </p>
+                </div>
+
+                {/* Filter Options */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">File Format</label>
+                    <select
+                      value={exportFormat}
+                      onChange={(e) => setExportFormat(e.target.value as "xlsx" | "csv")}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium"
+                    >
+                      <option value="xlsx">Excel Workbook (.xlsx)</option>
+                      <option value="csv">Standard CSV (.csv)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">Call Outcome Filter</label>
+                    <select
+                      value={exportStatus}
+                      onChange={(e) => setExportStatus(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium"
+                    >
+                      <option value="all">All Call Records</option>
+                      <option value="completed">Answered Only (Talk Time &gt; 0)</option>
+                      <option value="missed">Missed Only</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">DTMF Keypad Response</label>
+                    <select
+                      value={exportDTMF}
+                      onChange={(e) => setExportDTMF(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 font-medium"
+                    >
+                      <option value="all">All Responses (or No Key)</option>
+                      <option value="1">Pressed 1</option>
+                      <option value="2">Pressed 2</option>
+                      <option value="3">Pressed 3</option>
+                      <option value="0">Pressed 0</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">
+                    Includes true talk duration, Smartflo call IDs, and carrier hangup reasons.
+                  </div>
+
+                  <button
+                    onClick={handleExportDownload}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download {exportFormat.toUpperCase()} Report</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* ======================================================== */}
+      {/* MODAL 1: CREATE NEW CAMPAIGN                             */}
+      {/* ======================================================== */}
+      {isNewCampaignOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xl max-w-lg w-full space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-base text-slate-900">Create New Outbound Campaign</h3>
+              <button
+                onClick={() => setIsNewCampaignOpen(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Campaign Name:</label>
+                <input
+                  type="text"
+                  value={newCampName}
+                  onChange={(e) => setNewCampName(e.target.value)}
+                  placeholder="e.g. Bengali Festive Promo"
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700">Trunk Channel Allocation:</label>
+                  <span className="font-bold text-indigo-600">{newCampConcurrency} channels</span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max={15}
+                  value={newCampConcurrency}
+                  onChange={(e) => setNewCampConcurrency(Number(e.target.value))}
+                  className="w-full accent-indigo-600 cursor-pointer"
+                />
+                <span className="text-[11px] text-slate-500">
+                  {trunkStatus.available_channels} channels currently free on your 15-channel trunk.
+                </span>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Destination IVR Audio Flow:</label>
+                <select
+                  value={newCampIVRId}
+                  onChange={(e) => {
+                    const sel = availableIVRs.find(i => String(i.id) === e.target.value);
+                    setNewCampIVRId(e.target.value);
+                    if (sel) {
+                      setNewCampIVRName(sel.name);
+                      if (sel.default_api_key) setNewCampApiKey(sel.default_api_key);
+                    }
+                  }}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900"
+                >
+                  {availableIVRs.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name} (ID #{i.id})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700">Smartflo Support Routing Key (API Key):</label>
+                  <span className="text-[10px] text-indigo-600 font-medium">Binds audio</span>
+                </div>
+                <input
+                  type="text"
+                  value={newCampApiKey}
+                  onChange={(e) => setNewCampApiKey(e.target.value)}
+                  placeholder="e.g. 865fac0f-bed8-491c-aa22-59c55c94d00c"
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs font-mono text-slate-900"
+                />
+                <span className="text-[11px] text-slate-500">
+                  Click-to-Call Support API Key generated in Smartflo Portal for this IVR flow.
+                </span>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Caller ID (DID) Strategy:</label>
+                <select
+                  value={newCampDidMode}
+                  onChange={(e) => setNewCampDidMode(e.target.value as "round_robin" | "single")}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900"
+                >
+                  <option value="round_robin">Round-Robin Rotation (across all 44 DIDs)</option>
+                  <option value="single">Fixed Single DID Number</option>
+                </select>
+              </div>
+
+              {newCampDidMode === "single" && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700">Select Fixed Single DID:</label>
+                    <span className="text-[10px] text-slate-500 font-medium">{allDIDs.length} DIDs Available</span>
+                  </div>
+                  <select
+                    value={newCampSingleDid}
+                    onChange={(e) => setNewCampSingleDid(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs font-mono text-slate-900"
+                  >
+                    {allDIDs.map((d, idx) => (
+                      <option key={d} value={d}>+{d} (DID #{idx + 1})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Inter-Call Pacing Delay (Seconds):</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="30"
+                  value={newCampDelay}
+                  onChange={(e) => setNewCampDelay(Number(e.target.value))}
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                onClick={() => setIsNewCampaignOpen(false)}
+                className="px-4 py-2 text-xs text-slate-600 hover:text-slate-900 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateCampaign}
+                disabled={isLoading || !newCampName.trim()}
+                className="px-5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shadow-xs disabled:opacity-50"
+              >
+                {isLoading ? "Creating..." : "Create Campaign"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 2: AUDIO STUDIO & RECORDING UPLOAD                 */}
+      {/* ======================================================== */}
+      {isAudioModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xl max-w-xl w-full space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="font-bold text-base text-slate-900">Smartflo Audio Studio</h3>
+                <p className="text-xs text-slate-500">Preview prompts and upload new audio files to Smartflo's CDN.</p>
+              </div>
+              <button onClick={() => setIsAudioModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+                ✕
+              </button>
+            </div>
+
+            {/* Audio Upload Box */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+              <h4 className="text-xs font-bold text-slate-900">Upload New Audio File (MP3/WAV)</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  placeholder="Audio Name (e.g. Diwali Offer Prompt)"
+                  value={uploadAudioName}
+                  onChange={(e) => setUploadAudioName(e.target.value)}
+                  className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900"
+                />
+                <input
+                  type="file"
+                  accept="audio/mp3, audio/wav, audio/mpeg"
+                  onChange={(e) => setUploadAudioFile(e.target.files?.[0] || null)}
+                  className="bg-white border border-slate-200 rounded-lg p-1.5 text-xs text-slate-700"
+                />
+              </div>
+              <button
+                onClick={handleUploadAudio}
+                disabled={isAudioUploading || !uploadAudioName.trim() || !uploadAudioFile}
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-lg shadow-xs disabled:opacity-50"
+              >
+                {isAudioUploading ? "Uploading to Smartflo CDN..." : "Upload & Register Recording"}
+              </button>
+            </div>
+
+            {/* Existing Audio Recordings List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              <h4 className="text-xs font-bold text-slate-700 mb-2">Available Recordings on Account</h4>
+              {availableRecordings.map((rec) => (
+                <div
+                  key={rec.id}
+                  className="p-3 bg-white border border-slate-200 rounded-lg flex items-center justify-between gap-3 text-xs"
+                >
+                  <div>
+                    <span className="font-semibold text-slate-900">{rec.name}</span>
+                    <span className="text-[10px] text-slate-400 block font-mono">ID: #{rec.id}</span>
+                  </div>
+
+                  {rec.url && (
+                    <audio controls className="h-7 w-48">
+                      <source src={rec.url} type="audio/mpeg" />
+                    </audio>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
