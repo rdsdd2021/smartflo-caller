@@ -7,6 +7,13 @@ class CallStatus(str, Enum):
     DIALING = "dialing"
     CONNECTED = "connected"
     COMPLETED = "completed"
+    ANSWERED = "answered"
+    NO_ANSWER = "no_answer"
+    BUSY = "busy"
+    REJECTED = "rejected"
+    UNREACHABLE = "unreachable"
+    QUICK_HANGUP = "quick_hangup"
+    INVALID_NUMBER = "invalid_number"
     MISSED = "missed"
     FAILED = "failed"
 

@@ -366,8 +366,16 @@ def get_paginated_leads(
     params: List[Any] = [campaign_id]
 
     if status_filter and status_filter.lower() != "all":
-        where_clauses.append("status = ?")
-        params.append(status_filter.lower())
+        sf = status_filter.lower()
+        if sf in ["answered", "completed"]:
+            where_clauses.append("status IN ('answered', 'completed')")
+        elif sf in ["dialing", "ringing", "connected", "in_call"]:
+            where_clauses.append("status IN ('dialing', 'connected')")
+        elif sf == "missed":
+            where_clauses.append("status IN ('missed', 'no_answer', 'rejected', 'busy', 'unreachable', 'quick_hangup', 'invalid_number')")
+        else:
+            where_clauses.append("status = ?")
+            params.append(sf)
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -409,10 +417,17 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
         counts = conn.execute("""
             SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN status IN ('completed', 'missed', 'failed') THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as answered,
-                SUM(CASE WHEN status IN ('missed', 'failed') THEN 1 ELSE 0 END) as missed,
-                SUM(CASE WHEN status = 'dialing' THEN 1 ELSE 0 END) as dialing,
+                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected') THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status IN ('completed', 'answered') THEN 1 ELSE 0 END) as answered,
+                SUM(CASE WHEN status = 'no_answer' THEN 1 ELSE 0 END) as no_answer,
+                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+                SUM(CASE WHEN status = 'busy' THEN 1 ELSE 0 END) as busy,
+                SUM(CASE WHEN status = 'unreachable' THEN 1 ELSE 0 END) as unreachable,
+                SUM(CASE WHEN status = 'quick_hangup' THEN 1 ELSE 0 END) as quick_hangup,
+                SUM(CASE WHEN status = 'invalid_number' THEN 1 ELSE 0 END) as invalid_number,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status IN ('missed', 'no_answer', 'rejected', 'busy', 'unreachable', 'quick_hangup', 'invalid_number') THEN 1 ELSE 0 END) as missed,
+                SUM(CASE WHEN status IN ('dialing', 'connected') THEN 1 ELSE 0 END) as dialing,
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(duration) as total_duration
             FROM leads WHERE campaign_id = ?
@@ -430,6 +445,13 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
     total = counts["total"] or 0
     completed = counts["completed"] or 0
     answered = counts["answered"] or 0
+    no_answer = counts["no_answer"] or 0
+    rejected = counts["rejected"] or 0
+    busy = counts["busy"] or 0
+    unreachable = counts["unreachable"] or 0
+    quick_hangup = counts["quick_hangup"] or 0
+    invalid_number = counts["invalid_number"] or 0
+    failed = counts["failed"] or 0
     missed = counts["missed"] or 0
     dialing = counts["dialing"] or 0
     pending = counts["pending"] or 0
@@ -440,6 +462,13 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
         "total_leads": total,
         "completed_leads": completed,
         "answered_leads": answered,
+        "no_answer_leads": no_answer,
+        "rejected_leads": rejected,
+        "busy_leads": busy,
+        "unreachable_leads": unreachable,
+        "quick_hangup_leads": quick_hangup,
+        "invalid_number_leads": invalid_number,
+        "failed_leads": failed,
         "missed_leads": missed,
         "dialing_leads": dialing,
         "pending_leads": pending,
@@ -496,20 +525,76 @@ def reset_missed_leads(campaign_id: str) -> int:
                 call_time = NULL, 
                 did_used = NULL, 
                 error_message = NULL
-            WHERE campaign_id = ? AND status IN ('missed', 'failed')
+            WHERE campaign_id = ? AND status IN (
+                'missed', 'failed', 'no_answer', 'rejected', 'busy', 
+                'unreachable', 'quick_hangup', 'invalid_number'
+            )
         """, (campaign_id,))
         count = cursor.rowcount
         conn.commit()
     sync_campaign_counters(campaign_id)
     return count
 
+def migrate_legacy_statuses():
+    """Classifies existing historical 'missed' leads into granular statuses based on hangup causes."""
+    try:
+        with get_connection() as conn:
+            # 1. No answer
+            conn.execute("""
+                UPDATE leads SET status = 'no_answer' 
+                WHERE status = 'missed' AND (
+                    error_message GLOB '*No answer*' OR 
+                    error_message GLOB '*No user response*' OR 
+                    error_message = 'No CDR returned / Unanswered'
+                )
+            """)
+            # 2. Rejected / Declined
+            conn.execute("""
+                UPDATE leads SET status = 'rejected' 
+                WHERE status = 'missed' AND error_message GLOB '*rejected*'
+            """)
+            # 3. User busy
+            conn.execute("""
+                UPDATE leads SET status = 'busy' 
+                WHERE status = 'missed' AND error_message GLOB '*busy*'
+            """)
+            # 4. Unallocated / Out of service
+            conn.execute("""
+                UPDATE leads SET status = 'unreachable' 
+                WHERE status = 'missed' AND (
+                    error_message GLOB '*Unallocated*' OR 
+                    error_message GLOB '*Interworking*'
+                )
+            """)
+            # 5. Invalid number
+            conn.execute("""
+                UPDATE leads SET status = 'invalid_number' 
+                WHERE status = 'missed' AND error_message GLOB '*Invalid*'
+            """)
+            # 6. Quick hangup
+            conn.execute("""
+                UPDATE leads SET status = 'quick_hangup' 
+                WHERE status = 'missed' AND error_message GLOB '*Normal Clearing*'
+            """)
+            conn.commit()
+    except Exception as e:
+        print(f"[Database] migrate_legacy_statuses error: {e}")
+
 def get_leads_for_export(campaign_id: str, status_filter: str = "all", dtmf_filter: str = "all") -> List[Dict[str, Any]]:
     where_clauses = ["campaign_id = ?"]
     params: List[Any] = [campaign_id]
 
     if status_filter and status_filter.lower() != "all":
-        where_clauses.append("status = ?")
-        params.append(status_filter.lower())
+        sf = status_filter.lower()
+        if sf in ["answered", "completed"]:
+            where_clauses.append("status IN ('answered', 'completed')")
+        elif sf in ["dialing", "ringing", "connected", "in_call"]:
+            where_clauses.append("status IN ('dialing', 'connected')")
+        elif sf == "missed":
+            where_clauses.append("status IN ('missed', 'no_answer', 'rejected', 'busy', 'unreachable', 'quick_hangup', 'invalid_number')")
+        else:
+            where_clauses.append("status = ?")
+            params.append(sf)
 
     if dtmf_filter and dtmf_filter.lower() != "all":
         if dtmf_filter.lower() == "none":
@@ -530,5 +615,6 @@ def get_leads_for_export(campaign_id: str, status_filter: str = "all", dtmf_filt
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-# Initialize schema immediately on import
+# Initialize schema and migrate legacy statuses immediately on import
 init_db()
+migrate_legacy_statuses()

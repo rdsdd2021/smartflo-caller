@@ -339,11 +339,24 @@ class CampaignRunner:
 
                     if is_answered:
                         final_status = "completed"
-                        # True duration: IVR talk time or answered seconds
                         final_duration = answered_sec if answered_sec > 0 else (raw_duration if raw_duration > 0 else total_dur)
                     else:
-                        final_status = "missed"
                         final_duration = 0
+                        hangup_lower = hangup_cause.lower()
+                        if "no answer" in hangup_lower or "no user response" in hangup_lower:
+                            final_status = "no_answer"
+                        elif "call rejected" in hangup_lower or "rejected" in hangup_lower:
+                            final_status = "rejected"
+                        elif "busy" in hangup_lower:
+                            final_status = "busy"
+                        elif "unallocated" in hangup_lower or "interworking" in hangup_lower or "out of service" in hangup_lower:
+                            final_status = "unreachable"
+                        elif "invalid" in hangup_lower:
+                            final_status = "invalid_number"
+                        elif "normal clearing" in hangup_lower:
+                            final_status = "quick_hangup"
+                        else:
+                            final_status = "no_answer"
 
                     slot.duration = final_duration
                     slot.dtmf = dtmf_pressed
@@ -355,15 +368,15 @@ class CampaignRunner:
                         "call_id": call_id,
                         "call_time": call_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "did_used": did,
-                        "error_message": f"Hangup: {hangup_cause}" if final_status == "missed" else None
+                        "error_message": f"Hangup: {hangup_cause}" if final_status != "completed" else None
                     })
                 else:
-                    final_status = "missed"
+                    final_status = "no_answer"
                     final_duration = 0
                     dtmf_pressed = None
                     call_id = ""
                     database.update_lead(lead_id, {
-                        "status": "missed",
+                        "status": "no_answer",
                         "duration": 0,
                         "error_message": "No CDR returned / Unanswered"
                     })

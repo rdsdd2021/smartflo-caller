@@ -65,6 +65,15 @@ interface CampaignItem {
   completed_leads: number;
   answered_leads: number;
   missed_leads: number;
+  no_answer_leads?: number;
+  rejected_leads?: number;
+  busy_leads?: number;
+  unreachable_leads?: number;
+  quick_hangup_leads?: number;
+  invalid_number_leads?: number;
+  failed_leads?: number;
+  pending_leads?: number;
+  answer_rate?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1207,27 +1216,42 @@ export default function SmartfloDialerApp() {
             {/* TAB CONTENT 1: OVERVIEW & LIVE TRUNK TELEMETRY */}
             {campaignTab === "overview" && (
               <div className="space-y-6">
-                {/* 4 KPI Metrics */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                    <span className="text-xs text-slate-500 font-medium">Total Leads</span>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">{activeCamp?.total_leads || 0}</p>
+                {/* Granular KPI Metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                  <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs">
+                    <span className="text-[11px] text-slate-500 font-medium">Total Leads</span>
+                    <p className="text-xl font-bold text-slate-900 mt-1">{activeCamp?.total_leads || 0}</p>
+                    <span className="text-[10px] text-slate-400">In Campaign</span>
                   </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                    <span className="text-xs text-slate-500 font-medium">Answered (Talk Time &gt; 0)</span>
-                    <p className="text-2xl font-bold text-emerald-600 mt-1">{activeCamp?.answered_leads || 0}</p>
+                  <div className="bg-white border border-emerald-100 rounded-xl p-3.5 shadow-2xs bg-emerald-50/20">
+                    <span className="text-[11px] text-emerald-700 font-medium">Answered</span>
+                    <p className="text-xl font-bold text-emerald-600 mt-1">{activeCamp?.answered_leads || 0}</p>
+                    <span className="text-[10px] text-emerald-600/80">{activeCamp?.answer_rate || 0}% Connect Rate</span>
                   </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                    <span className="text-xs text-slate-500 font-medium">Missed / Unanswered</span>
-                    <p className="text-2xl font-bold text-rose-500 mt-1">{activeCamp?.missed_leads || 0}</p>
+                  <div className="bg-white border border-amber-100 rounded-xl p-3.5 shadow-2xs bg-amber-50/20">
+                    <span className="text-[11px] text-amber-700 font-medium">No Answer</span>
+                    <p className="text-xl font-bold text-amber-600 mt-1">{activeCamp?.no_answer_leads || 0}</p>
+                    <span className="text-[10px] text-amber-600/80">Rang 30s</span>
                   </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                    <span className="text-xs text-slate-500 font-medium">Connect Rate</span>
-                    <p className="text-2xl font-bold text-indigo-600 mt-1">
-                      {activeCamp?.total_leads > 0
-                        ? `${Math.round(((activeCamp.answered_leads || 0) / (activeCamp.completed_leads || 1)) * 100)}%`
-                        : "0%"}
-                    </p>
+                  <div className="bg-white border border-purple-100 rounded-xl p-3.5 shadow-2xs bg-purple-50/20">
+                    <span className="text-[11px] text-purple-700 font-medium">Rejected</span>
+                    <p className="text-xl font-bold text-purple-600 mt-1">{activeCamp?.rejected_leads || 0}</p>
+                    <span className="text-[10px] text-purple-600/80">Declined</span>
+                  </div>
+                  <div className="bg-white border border-orange-100 rounded-xl p-3.5 shadow-2xs bg-orange-50/20">
+                    <span className="text-[11px] text-orange-700 font-medium">Busy</span>
+                    <p className="text-xl font-bold text-orange-600 mt-1">{activeCamp?.busy_leads || 0}</p>
+                    <span className="text-[10px] text-orange-600/80">Line Engaged</span>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs bg-slate-50/50">
+                    <span className="text-[11px] text-slate-600 font-medium">Unreachable</span>
+                    <p className="text-xl font-bold text-slate-700 mt-1">{activeCamp?.unreachable_leads || 0}</p>
+                    <span className="text-[10px] text-slate-400">Switched Off</span>
+                  </div>
+                  <div className="bg-white border border-sky-100 rounded-xl p-3.5 shadow-2xs bg-sky-50/20">
+                    <span className="text-[11px] text-sky-700 font-medium">Quick Hangup</span>
+                    <p className="text-xl font-bold text-sky-600 mt-1">{activeCamp?.quick_hangup_leads || 0}</p>
+                    <span className="text-[10px] text-sky-600/80">&lt; 3s Call</span>
                   </div>
                 </div>
 
@@ -1636,13 +1660,18 @@ export default function SmartfloDialerApp() {
                           setLeadsStatusFilter(e.target.value);
                           setLeadsPage(1);
                         }}
-                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium"
                       >
                         <option value="all">All Statuses</option>
-                        <option value="pending">Pending</option>
                         <option value="completed">Answered</option>
-                        <option value="missed">Missed</option>
-                        <option value="failed">Failed</option>
+                        <option value="no_answer">No Answer (Rang 30s)</option>
+                        <option value="rejected">Rejected / Declined</option>
+                        <option value="busy">User Busy</option>
+                        <option value="unreachable">Unreachable / Switched Off</option>
+                        <option value="quick_hangup">Quick Hangup (&lt;3s)</option>
+                        <option value="failed">Failed / System Error</option>
+                        <option value="pending">Pending in Queue</option>
+                        <option value="missed">All Unanswered (Summary)</option>
                       </select>
 
                       <button
@@ -1724,14 +1753,70 @@ export default function SmartfloDialerApp() {
                                 {lead.name || "—"}
                               </td>
                               <td className="py-2.5 px-3">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                                  lead.status === "completed" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
-                                  lead.status === "missed" ? "bg-rose-50 text-rose-700 border-rose-200" :
-                                  lead.status === "dialing" || lead.status === "connected" ? "bg-amber-50 text-amber-700 border-amber-200" :
-                                  "bg-slate-100 text-slate-600 border-slate-200"
-                                }`}>
-                                  {lead.status.toUpperCase()}
-                                </span>
+                                {(() => {
+                                  const s = (lead.status || "").toLowerCase();
+                                  if (s === "completed" || s === "answered") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        ANSWERED
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "no_answer") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                                        NO ANSWER
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "rejected") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+                                        REJECTED
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "busy") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-700 border border-orange-200">
+                                        BUSY
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "unreachable" || s === "invalid_number") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-300">
+                                        {s === "invalid_number" ? "INVALID NUMBER" : "UNREACHABLE"}
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "quick_hangup") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                                        QUICK HANGUP
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "dialing" || s === "connected") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 animate-pulse">
+                                        {s === "dialing" ? "RINGING" : "IN CALL"}
+                                      </span>
+                                    );
+                                  }
+                                  if (s === "failed") {
+                                    return (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200" title={lead.error_message || ""}>
+                                        FAILED
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                                      {lead.status.toUpperCase()}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               <td className="py-2.5 px-3 font-mono text-slate-700">
                                 {lead.duration > 0 ? `${lead.duration}s` : "0s"}

@@ -145,6 +145,25 @@ def get_campaign_detail(campaign_id: str):
     camp = database.get_campaign(campaign_id)
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    summary = database.get_campaign_summary(campaign_id)
+    if summary:
+        camp.update({
+            "total_leads": summary.get("total_leads", camp.get("total_leads", 0)),
+            "completed_leads": summary.get("completed_leads", 0),
+            "answered_leads": summary.get("answered_leads", 0),
+            "no_answer_leads": summary.get("no_answer_leads", 0),
+            "rejected_leads": summary.get("rejected_leads", 0),
+            "busy_leads": summary.get("busy_leads", 0),
+            "unreachable_leads": summary.get("unreachable_leads", 0),
+            "quick_hangup_leads": summary.get("quick_hangup_leads", 0),
+            "invalid_number_leads": summary.get("invalid_number_leads", 0),
+            "failed_leads": summary.get("failed_leads", 0),
+            "missed_leads": summary.get("missed_leads", 0),
+            "dialing_leads": summary.get("dialing_leads", 0),
+            "pending_leads": summary.get("pending_leads", 0),
+            "answer_rate": summary.get("answer_rate", 0),
+            "dtmf_counts": summary.get("dtmf_counts", {})
+        })
     runner = campaign_engine.get_runner(campaign_id)
     camp["live_status"] = runner.status
     camp["channel_slots"] = [s.model_dump() for s in runner.get_slots()]
