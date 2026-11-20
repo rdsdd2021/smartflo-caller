@@ -802,7 +802,10 @@ export default function SmartfloDialerApp() {
     c.ivr_name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const activeCamp = campaigns.find(c => c.id === selectedCampaignId) || activeCampaignDetail;
+  const baseCamp = campaigns.find(c => c.id === selectedCampaignId);
+  const activeCamp = activeCampaignDetail
+    ? { ...(baseCamp || {}), ...activeCampaignDetail }
+    : baseCamp;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased flex flex-col">

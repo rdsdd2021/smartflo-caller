@@ -112,13 +112,30 @@ def get_trunk_status():
 @app.get("/api/campaigns")
 def list_all_campaigns():
     camps = database.list_campaigns()
-    # Attach active running state from engine
+    # Attach active running state from engine and granular summary counters
     for c in camps:
         cid = c["id"]
         if cid in campaign_engine.runners:
             c["live_status"] = campaign_engine.runners[cid].status
         else:
             c["live_status"] = c.get("status", "idle")
+        summary = database.get_campaign_summary(cid)
+        if summary:
+            c.update({
+                "completed_leads": summary.get("completed_leads", 0),
+                "answered_leads": summary.get("answered_leads", 0),
+                "no_answer_leads": summary.get("no_answer_leads", 0),
+                "rejected_leads": summary.get("rejected_leads", 0),
+                "busy_leads": summary.get("busy_leads", 0),
+                "unreachable_leads": summary.get("unreachable_leads", 0),
+                "quick_hangup_leads": summary.get("quick_hangup_leads", 0),
+                "invalid_number_leads": summary.get("invalid_number_leads", 0),
+                "failed_leads": summary.get("failed_leads", 0),
+                "missed_leads": summary.get("missed_leads", 0),
+                "dialing_leads": summary.get("dialing_leads", 0),
+                "pending_leads": summary.get("pending_leads", 0),
+                "answer_rate": summary.get("answer_rate", 0)
+            })
     return {"campaigns": camps}
 
 @app.post("/api/campaigns")
