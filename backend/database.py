@@ -472,6 +472,17 @@ def update_lead(lead_id: str, updates: Dict[str, Any]):
         conn.execute(f"UPDATE leads SET {', '.join(set_clause)} WHERE id = ?", params)
         conn.commit()
 
+def reset_unended_calls(campaign_id: str):
+    """Resets any stuck 'dialing' or 'connected' leads back to 'pending' on startup/resume."""
+    with get_connection() as conn:
+        conn.execute("""
+            UPDATE leads 
+            SET status = 'pending', error_message = NULL 
+            WHERE campaign_id = ? AND status IN ('dialing', 'connected')
+        """, (campaign_id,))
+        conn.commit()
+    sync_campaign_counters(campaign_id)
+
 def reset_missed_leads(campaign_id: str) -> int:
     with get_connection() as conn:
         cursor = conn.cursor()

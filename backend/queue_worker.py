@@ -24,6 +24,8 @@ class CampaignRunner:
         ]
         self._did_index: int = 0
         self._pause_event: Optional[asyncio.Event] = None
+        self._originate_lock: Optional[asyncio.Lock] = None
+        self._in_flight_ids: set = set()
         self._worker_tasks: List[asyncio.Task] = []
         self._pool_task: Optional[asyncio.Task] = None
         self._queue: Optional[asyncio.Queue] = None
@@ -33,6 +35,11 @@ class CampaignRunner:
             self._pause_event = asyncio.Event()
             self._pause_event.set()
         return self._pause_event
+
+    def _get_originate_lock(self) -> asyncio.Lock:
+        if self._originate_lock is None:
+            self._originate_lock = asyncio.Lock()
+        return self._originate_lock
 
     def get_next_did(self) -> str:
         did_mode = self.campaign_data.get("did_mode", "round_robin")
@@ -105,6 +112,8 @@ class CampaignRunner:
     def stop(self):
         self.status = "stopped"
         database.update_campaign_status(self.campaign_id, "stopped")
+        database.reset_unended_calls(self.campaign_id)
+        self._in_flight_ids.clear()
         self._get_pause_event().set()
         for t in self._worker_tasks:
             if not t.done():
@@ -117,38 +126,52 @@ class CampaignRunner:
     async def _run_pool(self):
         self._queue = asyncio.Queue()
         self._worker_tasks = []
+        self._in_flight_ids.clear()
+
+        # Clean up any stuck dialing/connected leads from previous interrupted runs
+        database.reset_unended_calls(self.campaign_id)
 
         # Start designated number of concurrent channel workers
         for i in range(self.concurrency):
             task = asyncio.create_task(self._channel_worker(i + 1))
             self._worker_tasks.append(task)
 
-        # Batch loader loop: feeds items from SQLite into queue
+        # Continuous replenishment loop: keeps queue stocked so channels NEVER starve
+        target_buffer = self.concurrency * 2
         while self.status == "running":
             await self._get_pause_event().wait()
-            
-            # Fetch next batch of pending leads from DB
-            batch = database.get_next_pending_leads(self.campaign_id, limit=30)
-            if not batch:
-                # No more pending leads; wait for active queue items to complete
-                await self._queue.join()
-                # Check again in case retries were added
-                batch_check = database.get_next_pending_leads(self.campaign_id, limit=5)
-                if not batch_check:
-                    break
-                else:
-                    batch = batch_check
 
-            for lead in batch:
-                await self._queue.put(lead)
+            current_qsize = self._queue.qsize()
+            if current_qsize < target_buffer:
+                needed = target_buffer - current_qsize
+                # Fetch pending leads from SQLite
+                batch = database.get_next_pending_leads(self.campaign_id, limit=needed + len(self._in_flight_ids) + 20)
+                added = 0
+                for lead in batch:
+                    lid = lead["id"]
+                    if lid not in self._in_flight_ids:
+                        self._in_flight_ids.add(lid)
+                        await self._queue.put(lead)
+                        added += 1
+                        if added >= needed:
+                            break
 
-            # Wait until batch is mostly processed before querying next
-            await self._queue.join()
+                # If no leads were added and queue is empty, check if all active calls are done
+                if added == 0 and current_qsize == 0:
+                    active_working = sum(1 for s in self.channel_slots if s.state != ChannelState.IDLE)
+                    if active_working == 0:
+                        # Double check database one last time in case retries were added
+                        recheck = database.get_next_pending_leads(self.campaign_id, limit=1)
+                        if not recheck:
+                            break
+
+            await asyncio.sleep(0.4)
 
         # Stop workers once finished
         for t in self._worker_tasks:
             t.cancel()
         self._worker_tasks = []
+        self._in_flight_ids.clear()
         self._reset_slots()
 
         if self.status != "stopped":
@@ -168,10 +191,10 @@ class CampaignRunner:
             while True:
                 await self._get_pause_event().wait()
                 lead = await self._queue.get()
+                lead_id = lead["id"]
 
                 # Double check lead status from DB in case it was modified
                 did = self.get_next_did()
-                lead_id = lead["id"]
                 phone = lead["phone_number"]
                 name = lead.get("name", "")
                 call_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -198,9 +221,35 @@ class CampaignRunner:
                     "status": "dialing"
                 })
 
-                # 1. Initiate outbound call via Smartflo
+                # 1. Initiate outbound call via Smartflo with rate-limit pacing and automatic retry
                 camp_api_key = self.campaign_data.get("api_key") or config.smartflo_api_key
-                call_res = await loop.run_in_executor(None, smartflo_client.initiate_call, phone, did, camp_api_key)
+                max_originate_attempts = 3
+                call_res = None
+
+                for attempt in range(1, max_originate_attempts + 1):
+                    async with self._get_originate_lock():
+                        call_res = await loop.run_in_executor(None, smartflo_client.initiate_call, phone, did, camp_api_key)
+                        # Stagger consecutive originates across all channels by 250ms to prevent Smartflo burst 429 errors
+                        await asyncio.sleep(0.25)
+
+                    if call_res.get("success"):
+                        break
+
+                    status_code = call_res.get("status_code", 0)
+                    msg = (call_res.get("message") or "").lower()
+                    is_retryable = (
+                        status_code in [429, 500, 502, 503, 504] or
+                        "too many requests" in msg or
+                        "timeout" in msg or
+                        "connection" in msg
+                    )
+
+                    if is_retryable and attempt < max_originate_attempts:
+                        backoff = attempt * 1.5
+                        print(f"[Channel-{channel_id}] Smartflo transient originate error ({call_res.get('status_code')}: {call_res.get('message')}). Retrying in {backoff}s (attempt {attempt}/{max_originate_attempts})...")
+                        await asyncio.sleep(backoff)
+                    else:
+                        break
 
                 if not call_res.get("success"):
                     database.update_lead(lead_id, {
@@ -209,13 +258,14 @@ class CampaignRunner:
                     })
                     database.sync_campaign_counters(self.campaign_id)
                     slot.state = ChannelState.IDLE
+                    self._in_flight_ids.discard(lead_id)
                     await ws_manager.broadcast({
                         "type": "slot_change",
                         "campaign_id": self.campaign_id,
                         "slot": slot.model_dump()
                     })
                     self._queue.task_done()
-                    pacing = self.campaign_data.get("inter_call_delay", 3)
+                    pacing = self.campaign_data.get("inter_call_delay", 2)
                     if pacing > 0:
                         await asyncio.sleep(pacing)
                     continue
@@ -364,10 +414,11 @@ class CampaignRunner:
                     "slot": slot.model_dump()
                 })
 
+                self._in_flight_ids.discard(lead_id)
                 self._queue.task_done()
 
                 # Inter-call pacing
-                pacing = self.campaign_data.get("inter_call_delay", 3)
+                pacing = self.campaign_data.get("inter_call_delay", 2)
                 if pacing > 0:
                     await asyncio.sleep(pacing)
 
@@ -376,6 +427,7 @@ class CampaignRunner:
         except Exception as e:
             print(f"[CampaignRunner-{self.campaign_id}] Worker {channel_id} exception: {e}")
             slot.state = ChannelState.IDLE
+            self._in_flight_ids.discard(lead_id)
             self._queue.task_done()
 
 
