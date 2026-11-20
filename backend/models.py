@@ -5,6 +5,7 @@ from enum import Enum
 class CallStatus(str, Enum):
     PENDING = "pending"
     DIALING = "dialing"
+    RINGING = "ringing"
     CONNECTED = "connected"
     COMPLETED = "completed"
     ANSWERED = "answered"
@@ -27,6 +28,7 @@ class CampaignState(str, Enum):
 class ChannelState(str, Enum):
     IDLE = "idle"
     DIALING = "dialing"
+    RINGING = "ringing"
     CONNECTED = "connected"
     COMPLETED = "completed"
 

@@ -65,7 +65,7 @@ class CampaignRunner:
     def get_slots(self) -> List[ChannelSlot]:
         now = time.time()
         for slot in self.channel_slots:
-            if slot.state == ChannelState.CONNECTED and slot.started_at:
+            if slot.state in [ChannelState.CONNECTED, ChannelState.RINGING, ChannelState.DIALING] and slot.started_at:
                 slot.duration = int(now - slot.started_at)
         return self.channel_slots
 
@@ -271,14 +271,14 @@ class CampaignRunner:
                     continue
 
                 ref_id = call_res.get("ref_id", "")
-                slot.state = ChannelState.CONNECTED
-                database.update_lead(lead_id, {"ref_id": ref_id, "status": "connected"})
+                slot.state = ChannelState.RINGING
+                database.update_lead(lead_id, {"ref_id": ref_id, "status": "ringing"})
                 await ws_manager.broadcast({
                     "type": "slot_change",
                     "campaign_id": self.campaign_id,
                     "slot": slot.model_dump(),
                     "lead_id": lead_id,
-                    "status": "connected"
+                    "status": "ringing"
                 })
 
                 # 2. Poll Smartflo CDR with tight 2-second interval for real-time responsiveness

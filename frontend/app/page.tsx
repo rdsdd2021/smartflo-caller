@@ -38,8 +38,8 @@ import {
 const getApiBase = () => {
   if (typeof window !== "undefined") {
     if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-    if ((window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && window.location.port === "3000") {
-      return "http://127.0.0.1:8000/api";
+    if (window.location.port === "3000") {
+      return `${window.location.protocol}//${window.location.hostname}:8000/api`;
     }
     return `${window.location.origin}/api`;
   }
@@ -80,7 +80,7 @@ interface CampaignItem {
 
 interface ChannelSlot {
   channel_id: number;
-  state: "idle" | "dialing" | "connected" | "completed";
+  state: "idle" | "dialing" | "ringing" | "connected" | "completed";
   phone_number?: string;
   name?: string;
   did?: string;
@@ -250,7 +250,7 @@ export default function SmartfloDialerApp() {
       try {
         const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
         const host = typeof window !== "undefined" ? window.location.hostname || "127.0.0.1" : "127.0.0.1";
-        const wsPort = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") && window.location.port === "3000"
+        const wsPort = typeof window !== "undefined" && window.location.port === "3000"
           ? ":8000"
           : (typeof window !== "undefined" && window.location.port && window.location.port !== "80" && window.location.port !== "443" ? `:${window.location.port}` : "");
         const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${protocol}//${host}${wsPort}/ws/telemetry`;
@@ -258,6 +258,7 @@ export default function SmartfloDialerApp() {
 
         ws.onopen = () => {
           setWsConnected(true);
+          if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
         };
 
         ws.onmessage = (event) => {
@@ -272,7 +273,7 @@ export default function SmartfloDialerApp() {
                 } else {
                   copy.push(data.slot);
                 }
-                return copy;
+                return copy.sort((a, b) => a.channel_id - b.channel_id);
               });
             } else if (data.type === "slot_tick") {
               setActiveSlots((prev) =>
@@ -364,7 +365,7 @@ export default function SmartfloDialerApp() {
       if (res.ok) {
         const data = await res.json();
         setActiveCampaignDetail(data);
-        setActiveSlots(data.channel_slots || []);
+        setActiveSlots((data.channel_slots || []).sort((a: any, b: any) => a.channel_id - b.channel_id));
         // Only sync form state when explicitly requested (campaign switch or after save)
         // This prevents 2.5s polling from wiping out user's active dropdown selections!
         if (syncForm) {
@@ -1276,15 +1277,18 @@ export default function SmartfloDialerApp() {
                           className={`p-3.5 rounded-lg border transition-all ${
                             slot.state === "connected"
                               ? "bg-emerald-50/70 border-emerald-200"
+                              : slot.state === "ringing"
+                              ? "bg-sky-50/70 border-sky-200"
                               : slot.state === "dialing"
                               ? "bg-amber-50/70 border-amber-200 animate-pulse"
                               : "bg-slate-50/60 border-slate-200 text-slate-400"
                           }`}
                         >
                           <div className="flex items-center justify-between text-[11px] font-semibold mb-1">
-                            <span className="text-slate-700">CH #{slot.channel_id + 1}</span>
-                            <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+                            <span className="text-slate-700">CH #{slot.channel_id}</span>
+                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-medium ${
                               slot.state === "connected" ? "bg-emerald-200/60 text-emerald-800" :
+                              slot.state === "ringing" ? "bg-sky-200/70 text-sky-800 animate-pulse" :
                               slot.state === "dialing" ? "bg-amber-200/60 text-amber-800" :
                               "bg-slate-200 text-slate-600"
                             }`}>

@@ -287,9 +287,9 @@ def sync_campaign_counters(campaign_id: str):
         row = conn.execute("""
             SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN status IN ('completed', 'missed', 'failed') THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as answered,
-                SUM(CASE WHEN status IN ('missed', 'failed') THEN 1 ELSE 0 END) as missed
+                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing') THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status IN ('completed', 'answered') THEN 1 ELSE 0 END) as answered,
+                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing', 'completed', 'answered') THEN 1 ELSE 0 END) as missed
             FROM leads WHERE campaign_id = ?
         """, (campaign_id,)).fetchone()
         
@@ -417,7 +417,7 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
         counts = conn.execute("""
             SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected') THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing') THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN status IN ('completed', 'answered') THEN 1 ELSE 0 END) as answered,
                 SUM(CASE WHEN status = 'no_answer' THEN 1 ELSE 0 END) as no_answer,
                 SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
@@ -427,7 +427,7 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
                 SUM(CASE WHEN status = 'invalid_number' THEN 1 ELSE 0 END) as invalid_number,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
                 SUM(CASE WHEN status IN ('missed', 'no_answer', 'rejected', 'busy', 'unreachable', 'quick_hangup', 'invalid_number') THEN 1 ELSE 0 END) as missed,
-                SUM(CASE WHEN status IN ('dialing', 'connected') THEN 1 ELSE 0 END) as dialing,
+                SUM(CASE WHEN status IN ('dialing', 'connected', 'ringing') THEN 1 ELSE 0 END) as dialing,
                 SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
                 SUM(duration) as total_duration
             FROM leads WHERE campaign_id = ?
@@ -507,7 +507,7 @@ def reset_unended_calls(campaign_id: str):
         conn.execute("""
             UPDATE leads 
             SET status = 'pending', error_message = NULL 
-            WHERE campaign_id = ? AND status IN ('dialing', 'connected')
+            WHERE campaign_id = ? AND status IN ('dialing', 'connected', 'ringing')
         """, (campaign_id,))
         conn.commit()
     sync_campaign_counters(campaign_id)
