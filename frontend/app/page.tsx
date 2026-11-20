@@ -87,6 +87,9 @@ interface ChannelSlot {
   duration: number;
   dtmf?: string;
   started_at?: number;
+  last_status?: string;
+  last_phone?: string;
+  last_duration?: number;
 }
 
 interface LeadItem {
@@ -1307,6 +1310,23 @@ export default function SmartfloDialerApp() {
                             </div>
                           ) : (
                             <div className="py-2 text-center text-xs text-slate-400">Idle slot</div>
+                          )}
+
+                          {slot.last_status && (
+                            <div className="mt-2 pt-1.5 border-t border-slate-100 flex items-center justify-between text-[10px]">
+                              <span className="text-slate-400">Prev:</span>
+                              <span className={`px-1.5 py-0.5 rounded font-semibold text-[9px] ${
+                                slot.last_status === "completed" || slot.last_status === "answered" ? "bg-emerald-100 text-emerald-800" :
+                                slot.last_status === "rejected" ? "bg-purple-100 text-purple-800" :
+                                slot.last_status === "busy" ? "bg-orange-100 text-orange-800" :
+                                slot.last_status === "no_answer" ? "bg-rose-100 text-rose-800" :
+                                slot.last_status === "unreachable" ? "bg-slate-200 text-slate-700" :
+                                slot.last_status === "quick_hangup" ? "bg-sky-100 text-sky-800" :
+                                "bg-slate-100 text-slate-600"
+                              }`}>
+                                {slot.last_status.replace("_", " ").toUpperCase()}{slot.last_duration ? ` (${slot.last_duration}s)` : ""}
+                              </span>
+                            </div>
                           )}
                         </div>
                       );

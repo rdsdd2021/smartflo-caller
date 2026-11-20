@@ -41,6 +41,9 @@ class ChannelSlot(BaseModel):
     duration: int = 0
     dtmf: Optional[str] = None
     started_at: Optional[float] = None
+    last_status: Optional[str] = None
+    last_phone: Optional[str] = None
+    last_duration: Optional[int] = None
 
 class Lead(BaseModel):
     id: str

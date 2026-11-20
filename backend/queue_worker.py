@@ -292,12 +292,23 @@ class CampaignRunner:
                     # Update live elapsed duration tick
                     if slot.started_at:
                         slot.duration = int(time.time() - slot.started_at)
-                        await ws_manager.broadcast({
-                            "type": "slot_tick",
-                            "campaign_id": self.campaign_id,
-                            "channel_id": slot.channel_id,
-                            "duration": slot.duration
-                        })
+                        # In Indian telecom, carrier ringing timeout is 20-25s. If call is active past 22s, customer answered
+                        if slot.duration >= 22 and slot.state == ChannelState.RINGING:
+                            slot.state = ChannelState.CONNECTED
+                            await ws_manager.broadcast({
+                                "type": "slot_change",
+                                "campaign_id": self.campaign_id,
+                                "slot": slot.model_dump(),
+                                "lead_id": lead_id,
+                                "status": "connected"
+                            })
+                        else:
+                            await ws_manager.broadcast({
+                                "type": "slot_tick",
+                                "campaign_id": self.campaign_id,
+                                "channel_id": slot.channel_id,
+                                "duration": slot.duration
+                            })
 
                     # Match by exact ref_id so we never bind to older calls to the same number
                     cdr = await loop.run_in_executor(None, smartflo_client.fetch_latest_cdr_for_number, phone, ref_id)
@@ -412,7 +423,10 @@ class CampaignRunner:
                     except Exception as e:
                         print(f"[Campaign-{self.campaign_id}] Google Sheet write-back error: {e}")
 
-                # Reset channel slot for next call
+                # Reset channel slot for next call while preserving previous outcome badge
+                slot.last_status = final_status
+                slot.last_phone = phone
+                slot.last_duration = final_duration
                 slot.state = ChannelState.IDLE
                 slot.phone_number = None
                 slot.name = None
