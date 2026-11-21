@@ -141,6 +141,13 @@ class CampaignRunner:
         while self.status == "running":
             await self._get_pause_event().wait()
 
+            # Self-healing watchdog: auto-respawn any terminated worker tasks
+            for idx, task in enumerate(self._worker_tasks):
+                if task.done() and self.status == "running":
+                    exc = task.exception() if not task.cancelled() else None
+                    print(f"[CampaignRunner-{self.campaign_id}] Worker {idx+1} terminated ({exc}). Respawning...")
+                    self._worker_tasks[idx] = asyncio.create_task(self._channel_worker(idx + 1))
+
             current_qsize = self._queue.qsize()
             if current_qsize < target_buffer:
                 needed = target_buffer - current_qsize
@@ -187,10 +194,19 @@ class CampaignRunner:
         except RuntimeError:
             loop = asyncio.get_event_loop()
 
-        try:
-            while True:
-                await self._get_pause_event().wait()
-                lead = await self._queue.get()
+        while self.status != "stopped":
+            await self._get_pause_event().wait()
+            if self.status != "running":
+                await asyncio.sleep(0.5)
+                continue
+
+            lead_id = None
+            try:
+                try:
+                    lead = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 lead_id = lead["id"]
 
                 # Double check lead status from DB in case it was modified
@@ -449,13 +465,19 @@ class CampaignRunner:
                 if pacing > 0:
                     await asyncio.sleep(pacing)
 
-        except asyncio.CancelledError:
-            slot.state = ChannelState.IDLE
-        except Exception as e:
-            print(f"[CampaignRunner-{self.campaign_id}] Worker {channel_id} exception: {e}")
-            slot.state = ChannelState.IDLE
-            self._in_flight_ids.discard(lead_id)
-            self._queue.task_done()
+            except asyncio.CancelledError:
+                slot.state = ChannelState.IDLE
+                break
+            except Exception as e:
+                print(f"[CampaignRunner-{self.campaign_id}] Worker {channel_id} exception on lead {lead_id}: {e}")
+                slot.state = ChannelState.IDLE
+                if lead_id:
+                    self._in_flight_ids.discard(lead_id)
+                    try:
+                        self._queue.task_done()
+                    except ValueError:
+                        pass
+                await asyncio.sleep(1.0)
 
 
 class MultiCampaignEngine:

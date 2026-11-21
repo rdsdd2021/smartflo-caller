@@ -31,7 +31,12 @@ if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     echo "✅ Ports 80 and 443 opened in UFW."
 fi
 
-echo "⚙️  [3/4] Preparing configuration..."
+echo "⚙️  [3/4] Preparing configuration and pulling latest code..."
+if [ -d .git ]; then
+    echo "🔄 Pulling latest updates from GitHub..."
+    git pull origin main || echo "⚠️  Git pull failed or branch diverged, proceeding with local files..."
+fi
+
 if [ ! -f .env ]; then
     cp .env.example .env
     echo "📄 Created .env from .env.example"
