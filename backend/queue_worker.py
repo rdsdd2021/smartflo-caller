@@ -56,11 +56,18 @@ class CampaignRunner:
         return did
 
     def set_concurrency(self, new_concurrency: int):
-        self.concurrency = min(TOTAL_TRUNK_CAPACITY, max(1, new_concurrency))
-        self.channel_slots = [
-            ChannelSlot(channel_id=i) for i in range(1, self.concurrency + 1)
-        ]
-        self.campaign_data["concurrency"] = self.concurrency
+        target = min(TOTAL_TRUNK_CAPACITY, max(1, new_concurrency))
+        self.concurrency = target
+        existing = {s.channel_id: s for s in self.channel_slots}
+        new_slots = []
+        for i in range(1, target + 1):
+            if i in existing:
+                new_slots.append(existing[i])
+            else:
+                new_slots.append(ChannelSlot(channel_id=i))
+        self.channel_slots = new_slots
+        self.campaign_data["concurrency"] = target
+        database.update_campaign_settings(self.campaign_id, {"concurrency": target})
 
     def get_slots(self) -> List[ChannelSlot]:
         now = time.time()
@@ -137,17 +144,26 @@ class CampaignRunner:
             self._worker_tasks.append(task)
 
         # Continuous replenishment loop: keeps queue stocked so channels NEVER starve
-        target_buffer = self.concurrency * 2
         while self.status == "running":
             await self._get_pause_event().wait()
 
-            # Self-healing watchdog: auto-respawn any terminated worker tasks
-            for idx, task in enumerate(self._worker_tasks):
-                if task.done() and self.status == "running":
-                    exc = task.exception() if not task.cancelled() else None
-                    print(f"[CampaignRunner-{self.campaign_id}] Worker {idx+1} terminated ({exc}). Respawning...")
-                    self._worker_tasks[idx] = asyncio.create_task(self._channel_worker(idx + 1))
+            # Dynamic worker scaling & self-healing watchdog:
+            for idx in range(self.concurrency):
+                cid = idx + 1
+                if idx < len(self._worker_tasks):
+                    task = self._worker_tasks[idx]
+                    if task.done() and self.status == "running":
+                        self._worker_tasks[idx] = asyncio.create_task(self._channel_worker(cid))
+                else:
+                    self._worker_tasks.append(asyncio.create_task(self._channel_worker(cid)))
 
+            if len(self._worker_tasks) > self.concurrency:
+                self._worker_tasks = [
+                    t for i, t in enumerate(self._worker_tasks)
+                    if i < self.concurrency or not t.done()
+                ]
+
+            target_buffer = self.concurrency * 2
             current_qsize = self._queue.qsize()
             if current_qsize < target_buffer:
                 needed = target_buffer - current_qsize
@@ -186,6 +202,8 @@ class CampaignRunner:
             database.update_campaign_status(self.campaign_id, "completed")
 
         database.sync_campaign_counters(self.campaign_id)
+        # Dynamically rebalance remaining running campaigns
+        campaign_engine.rebalance_channels()
 
     async def _channel_worker(self, channel_id: int):
         slot = self.channel_slots[channel_id - 1]
@@ -199,6 +217,11 @@ class CampaignRunner:
             if self.status != "running":
                 await asyncio.sleep(0.5)
                 continue
+
+            # If dynamic channel rebalancing reduced concurrency, retire excess worker cleanly
+            if channel_id > self.concurrency:
+                slot.state = ChannelState.IDLE
+                break
 
             lead_id = None
             try:
@@ -524,43 +547,119 @@ class MultiCampaignEngine:
     def get_available_channels(self) -> int:
         return max(0, TOTAL_TRUNK_CAPACITY - self.get_total_active_channels())
 
+    def calculate_fair_allocation(self, running_runners: List[CampaignRunner]) -> Dict[str, int]:
+        """
+        Calculates optimal fair-share channel allocation for all concurrently running campaigns.
+        Guarantees total allocated channels never exceed TOTAL_TRUNK_CAPACITY (15).
+        """
+        if not running_runners:
+            return {}
+
+        n = len(running_runners)
+        if n == 1:
+            r = running_runners[0]
+            demanded = r.campaign_data.get("concurrency") or TOTAL_TRUNK_CAPACITY
+            return {r.campaign_id: min(TOTAL_TRUNK_CAPACITY, max(1, demanded))}
+
+        demands = {}
+        for r in running_runners:
+            d = r.campaign_data.get("concurrency")
+            if not d:
+                db_c = database.get_campaign(r.campaign_id)
+                d = db_c.get("concurrency", 5) if db_c else 5
+            demands[r.campaign_id] = max(1, d)
+
+        allocation = {r.campaign_id: 1 for r in running_runners}
+        remaining = TOTAL_TRUNK_CAPACITY - sum(allocation.values())
+
+        while remaining > 0:
+            eligible = [cid for cid, dem in demands.items() if allocation[cid] < dem]
+            if not eligible:
+                eligible = [cid for cid in demands if allocation[cid] < TOTAL_TRUNK_CAPACITY]
+                if not eligible:
+                    break
+
+            for cid in eligible:
+                if remaining <= 0:
+                    break
+                allocation[cid] += 1
+                remaining -= 1
+
+        return allocation
+
+    def rebalance_channels(self):
+        """
+        Rebalances all running campaigns across the 15-channel trunk dynamically.
+        """
+        running_runners = [r for r in self.runners.values() if r.status == "running"]
+        if not running_runners:
+            return
+
+        allocations = self.calculate_fair_allocation(running_runners)
+        for r in running_runners:
+            target = allocations.get(r.campaign_id, r.concurrency)
+            if target != r.concurrency:
+                print(f"[MultiCampaignEngine] Dynamically allocating {target} channels to '{r.campaign_data.get('name')}' (was {r.concurrency})")
+                r.set_concurrency(target)
+
+        # Broadcast updated trunk status to all UI clients
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(ws_manager.broadcast({
+                "type": "trunk_status",
+                "trunk_status": self.get_trunk_status()
+            }))
+        except RuntimeError:
+            pass
+
     def start_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
         if runner.status == "running":
-            return {"success": True, "status": "running"}
+            return {
+                "success": True, 
+                "status": "running", 
+                "allocated_channels": runner.concurrency,
+                "message": f"Campaign '{runner.campaign_data.get('name')}' is already running with {runner.concurrency} channels."
+            }
 
-        # Validate channel capacity
-        active_channels = self.get_total_active_channels()
-        if active_channels + runner.concurrency > TOTAL_TRUNK_CAPACITY:
-            available = TOTAL_TRUNK_CAPACITY - active_channels
-            raise ValueError(
-                f"Cannot start campaign '{runner.campaign_data.get('name')}': Requires {runner.concurrency} channels, "
-                f"but only {available} channels are available on the 15-channel trunk. "
-                f"Please reduce this campaign's concurrency or pause another running campaign."
-            )
+        # Mark runner as running so rebalance includes it
+        runner.status = "running"
+        database.update_campaign_status(campaign_id, "running")
+
+        # Automatically calculate and apply fair channel distribution across the 15-channel trunk
+        self.rebalance_channels()
 
         runner.start()
-        return {"success": True, "status": runner.status}
+        return {
+            "success": True, 
+            "status": "running", 
+            "allocated_channels": runner.concurrency,
+            "message": f"Campaign started with {runner.concurrency} dynamically allocated channels."
+        }
 
     def pause_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
         runner.pause()
+        self.rebalance_channels()
         return {"success": True, "status": runner.status}
 
     def resume_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
-        active_channels = self.get_total_active_channels()
-        if active_channels + runner.concurrency > TOTAL_TRUNK_CAPACITY:
-            available = TOTAL_TRUNK_CAPACITY - active_channels
-            raise ValueError(
-                f"Cannot resume campaign: Requires {runner.concurrency} channels, but only {available} are available."
-            )
+        runner.status = "running"
+        database.update_campaign_status(campaign_id, "running")
+        self.rebalance_channels()
         runner.resume()
-        return {"success": True, "status": runner.status}
+        return {
+            "success": True, 
+            "status": runner.status,
+            "allocated_channels": runner.concurrency,
+            "message": f"Campaign resumed with {runner.concurrency} dynamically allocated channels."
+        }
 
     def stop_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
         runner.stop()
+        self.rebalance_channels()
         return {"success": True, "status": runner.status}
 
     def retry_missed(self, campaign_id: str) -> Dict[str, Any]:
@@ -576,7 +675,7 @@ class MultiCampaignEngine:
         return {
             "total_capacity": TOTAL_TRUNK_CAPACITY,
             "active_channels": active_channels,
-            "available_channels": TOTAL_TRUNK_CAPACITY - active_channels,
+            "available_channels": max(0, TOTAL_TRUNK_CAPACITY - active_channels),
             "running_campaigns_count": running_count,
             "campaigns": camps
         }

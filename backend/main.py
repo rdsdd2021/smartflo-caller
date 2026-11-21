@@ -196,6 +196,7 @@ def update_campaign(campaign_id: str, payload: UpdateCampaignRequest):
     runner = campaign_engine.get_runner(campaign_id)
     if "concurrency" in updates and updates["concurrency"] is not None:
         runner.set_concurrency(updates["concurrency"])
+        campaign_engine.rebalance_channels()
     runner.campaign_data.update(camp)
     return {"success": True, "campaign": camp}
 
@@ -204,6 +205,7 @@ def delete_campaign(campaign_id: str):
     runner = campaign_engine.runners.get(campaign_id)
     if runner and runner.status == "running":
         runner.stop()
+        campaign_engine.rebalance_channels()
     database.delete_campaign(campaign_id)
     if campaign_id in campaign_engine.runners:
         del campaign_engine.runners[campaign_id]

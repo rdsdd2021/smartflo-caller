@@ -284,6 +284,10 @@ export default function SmartfloDialerApp() {
                   s.channel_id === data.channel_id ? { ...s, duration: data.duration } : s
                 )
               );
+            } else if (data.type === "trunk_status" && data.trunk_status) {
+              setTrunkStatus(data.trunk_status);
+              fetchCampaignsList();
+              if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
             } else if (data.type === "lead_completed") {
               setLeadsList((prev) =>
                 prev.map((l) =>
@@ -530,8 +534,12 @@ export default function SmartfloDialerApp() {
       const res = await fetch(`${API_BASE}/campaigns/${cid}/${action}`, { method: "POST" });
       const data = await res.json();
       if (res.ok && data.success) {
-        showNotification(`Campaign ${action.toUpperCase()} signal sent.`, "success");
+        const msg = data.allocated_channels 
+          ? `Campaign ${action.toUpperCase()} (${data.allocated_channels} channels active).`
+          : `Campaign ${action.toUpperCase()} signal sent.`;
+        showNotification(msg, "success");
         fetchCampaignsList();
+        fetchTrunkStatus();
         if (selectedCampaignId === cid) fetchCampaignDetail(cid, false);
       } else {
         showNotification(data.message || data.detail || `Failed to ${action} campaign`, "error");
