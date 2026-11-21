@@ -112,30 +112,16 @@ def get_trunk_status():
 @app.get("/api/campaigns")
 def list_all_campaigns():
     camps = database.list_campaigns()
-    # Attach active running state from engine and granular summary counters
+    # Attach active running state from engine and calculate answer rate instantly
     for c in camps:
         cid = c["id"]
         if cid in campaign_engine.runners:
             c["live_status"] = campaign_engine.runners[cid].status
         else:
             c["live_status"] = c.get("status", "idle")
-        summary = database.get_campaign_summary(cid)
-        if summary:
-            c.update({
-                "completed_leads": summary.get("completed_leads", 0),
-                "answered_leads": summary.get("answered_leads", 0),
-                "no_answer_leads": summary.get("no_answer_leads", 0),
-                "rejected_leads": summary.get("rejected_leads", 0),
-                "busy_leads": summary.get("busy_leads", 0),
-                "unreachable_leads": summary.get("unreachable_leads", 0),
-                "quick_hangup_leads": summary.get("quick_hangup_leads", 0),
-                "invalid_number_leads": summary.get("invalid_number_leads", 0),
-                "failed_leads": summary.get("failed_leads", 0),
-                "missed_leads": summary.get("missed_leads", 0),
-                "dialing_leads": summary.get("dialing_leads", 0),
-                "pending_leads": summary.get("pending_leads", 0),
-                "answer_rate": summary.get("answer_rate", 0)
-            })
+        completed = c.get("completed_leads", 0)
+        answered = c.get("answered_leads", 0)
+        c["answer_rate"] = round((answered / completed * 100), 1) if completed > 0 else 0
     return {"campaigns": camps}
 
 @app.post("/api/campaigns")
@@ -419,13 +405,21 @@ def update_did_settings(payload: DIDSettingsRequest):
 # IVR STUDIO & RECORDINGS ENDPOINTS
 # -------------------------------------------------------------
 @app.get("/api/ivrs")
-def list_ivrs():
-    ivrs = smartflo_client.fetch_ivrs()
+def list_ivrs(refresh: bool = False):
+    if refresh:
+        ivrs = smartflo_client.fetch_ivrs()
+    else:
+        cached = database.get_cached_ivrs()
+        ivrs = cached if cached else smartflo_client.fetch_ivrs()
     return {"ivrs": ivrs, "active_ivr_id": config.ivr_id, "active_ivr_name": config.ivr_name}
 
 @app.get("/api/recordings")
-def list_recordings():
-    recordings = smartflo_client.fetch_recordings()
+def list_recordings(refresh: bool = False):
+    if refresh:
+        recordings = smartflo_client.fetch_recordings()
+    else:
+        cached = database.get_cached_recordings()
+        recordings = cached if cached else smartflo_client.fetch_recordings()
     return {"recordings": recordings}
 
 @app.post("/api/recordings/upload")

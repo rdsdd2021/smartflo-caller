@@ -147,9 +147,15 @@ export default function SmartfloDialerApp() {
     dids_count: 44
   });
   const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
+  const [isCampaignsLoading, setIsCampaignsLoading] = useState(true);
   const [activeCampaignDetail, setActiveCampaignDetail] = useState<any | null>(null);
   const [activeSlots, setActiveSlots] = useState<ChannelSlot[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
+
+  const selectedCampaignIdRef = useRef<string | null>(selectedCampaignId);
+  useEffect(() => {
+    selectedCampaignIdRef.current = selectedCampaignId;
+  }, [selectedCampaignId]);
 
   // Search & Filter for Dashboard
   const [searchQuery, setSearchQuery] = useState("");
@@ -233,16 +239,16 @@ export default function SmartfloDialerApp() {
     const interval = setInterval(() => {
       fetchTrunkStatus();
       fetchCampaignsList();
-      if (selectedCampaignId) {
-        fetchCampaignDetail(selectedCampaignId, false);
+      if (selectedCampaignIdRef.current) {
+        fetchCampaignDetail(selectedCampaignIdRef.current, false);
         if (campaignTab === "leads") {
-          fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+          fetchCampaignLeads(selectedCampaignIdRef.current, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
         }
       }
-    }, 1200);
+    }, 4000);
 
     return () => clearInterval(interval);
-  }, [selectedCampaignId, campaignTab, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
+  }, [campaignTab, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
 
   // 1B. Live WebSocket Telemetry Stream (Sub-second real-time push)
   useEffect(() => {
@@ -261,13 +267,21 @@ export default function SmartfloDialerApp() {
 
         ws.onopen = () => {
           setWsConnected(true);
-          if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
+          const currentCid = selectedCampaignIdRef.current;
+          if (currentCid) fetchCampaignDetail(currentCid, false);
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            const currentCid = selectedCampaignIdRef.current;
+
             if (data.type === "slot_change" && data.slot) {
+              if (currentCid && data.campaign_id && data.campaign_id !== currentCid) {
+                return;
+              }
+              if (!currentCid) return;
+
               setActiveSlots((prev) => {
                 const copy = [...prev];
                 const idx = copy.findIndex((s) => s.channel_id === data.slot.channel_id);
@@ -279,6 +293,11 @@ export default function SmartfloDialerApp() {
                 return copy.sort((a, b) => a.channel_id - b.channel_id);
               });
             } else if (data.type === "slot_tick") {
+              if (currentCid && data.campaign_id && data.campaign_id !== currentCid) {
+                return;
+              }
+              if (!currentCid) return;
+
               setActiveSlots((prev) =>
                 prev.map((s) =>
                   s.channel_id === data.channel_id ? { ...s, duration: data.duration } : s
@@ -287,26 +306,28 @@ export default function SmartfloDialerApp() {
             } else if (data.type === "trunk_status" && data.trunk_status) {
               setTrunkStatus(data.trunk_status);
               fetchCampaignsList();
-              if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
+              if (currentCid) fetchCampaignDetail(currentCid, false);
             } else if (data.type === "lead_completed") {
-              setLeadsList((prev) =>
-                prev.map((l) =>
-                  l.id === data.lead_id
-                    ? {
-                        ...l,
-                        status: data.status,
-                        duration: data.duration,
-                        dtmf: data.dtmf,
-                        call_id: data.call_id,
-                        did_used: data.did,
-                        call_time: data.call_time
-                      }
-                    : l
-                )
-              );
+              if (currentCid && (!data.campaign_id || data.campaign_id === currentCid)) {
+                setLeadsList((prev) =>
+                  prev.map((l) =>
+                    l.id === data.lead_id
+                      ? {
+                          ...l,
+                          status: data.status,
+                          duration: data.duration,
+                          dtmf: data.dtmf,
+                          call_id: data.call_id,
+                          did_used: data.did,
+                          call_time: data.call_time
+                        }
+                      : l
+                  )
+                );
+              }
               fetchTrunkStatus();
               fetchCampaignsList();
-              if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
+              if (currentCid) fetchCampaignDetail(currentCid, false);
             }
           } catch {}
         };
@@ -330,10 +351,13 @@ export default function SmartfloDialerApp() {
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [selectedCampaignId]);
+  }, []);
 
   // When active campaign changes, reset leads page and load campaign details
   useEffect(() => {
+    setActiveCampaignDetail(null);
+    setActiveSlots([]);
+    setLeadsList([]);
     if (selectedCampaignId) {
       fetchCampaignDetail(selectedCampaignId, true);
       setLeadsPage(1);
@@ -363,7 +387,9 @@ export default function SmartfloDialerApp() {
         const data = await res.json();
         setCampaigns(data.campaigns || []);
       }
-    } catch {}
+    } catch {} finally {
+      setIsCampaignsLoading(false);
+    }
   };
 
   const fetchCampaignDetail = async (cid: string, syncForm = false) => {
@@ -371,10 +397,11 @@ export default function SmartfloDialerApp() {
       const res = await fetch(`${API_BASE}/campaigns/${cid}`);
       if (res.ok) {
         const data = await res.json();
+        if (selectedCampaignIdRef.current !== cid) return;
         setActiveCampaignDetail(data);
         setActiveSlots((data.channel_slots || []).sort((a: any, b: any) => a.channel_id - b.channel_id));
         // Only sync form state when explicitly requested (campaign switch or after save)
-        // This prevents 2.5s polling from wiping out user's active dropdown selections!
+        // This prevents polling from wiping out user's active dropdown selections!
         if (syncForm) {
           setEditConcurrency(data.concurrency || 5);
           setEditIVRId(data.ivr_id || "89733");
@@ -406,6 +433,7 @@ export default function SmartfloDialerApp() {
       const res = await fetch(`${API_BASE}/campaigns/${cid}/leads?${query.toString()}`);
       if (res.ok) {
         const data = await res.json();
+        if (selectedCampaignIdRef.current !== cid) return;
         const items = data.items || data.leads || [];
         setLeadsList(items);
         setLeadsTotalCount(data.total_count ?? items.length);
@@ -811,7 +839,7 @@ export default function SmartfloDialerApp() {
   );
 
   const baseCamp = campaigns.find(c => c.id === selectedCampaignId);
-  const activeCamp = activeCampaignDetail
+  const activeCamp = (activeCampaignDetail && activeCampaignDetail.id === selectedCampaignId)
     ? { ...(baseCamp || {}), ...activeCampaignDetail }
     : baseCamp;
 
@@ -951,7 +979,22 @@ export default function SmartfloDialerApp() {
             </div>
 
             {/* Campaigns Card Grid */}
-            {filteredCampaigns.length === 0 ? (
+            {isCampaignsLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs animate-pulse">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="h-5 bg-slate-200 rounded w-1/3"></div>
+                      <div className="h-5 bg-slate-100 rounded-full w-16"></div>
+                    </div>
+                    <div className="h-4 bg-slate-100 rounded w-1/2 mb-4"></div>
+                    <div className="h-10 bg-slate-100 rounded mb-4"></div>
+                    <div className="h-12 bg-slate-50 rounded mb-4"></div>
+                    <div className="h-8 bg-slate-200 rounded"></div>
+                  </div>
+                ))}
+              </div>
+            ) : filteredCampaigns.length === 0 ? (
               <div className="bg-white border border-slate-200 border-dashed rounded-xl p-12 text-center shadow-2xs">
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400 mb-3">
                   <Layers className="w-6 h-6" />
@@ -1140,7 +1183,7 @@ export default function SmartfloDialerApp() {
                 <div className="flex items-center gap-2">
                   {(activeCamp?.live_status || activeCamp?.status) !== "running" ? (
                     <button
-                      onClick={() => handleCampaignControl(activeCamp.id, (activeCamp?.live_status || activeCamp?.status) === "paused" ? "resume" : "start")}
+                      onClick={() => activeCamp?.id && handleCampaignControl(activeCamp.id, (activeCamp?.live_status || activeCamp?.status) === "paused" ? "resume" : "start")}
                       className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition-colors"
                     >
                       <Play className="w-3.5 h-3.5 fill-white" />
@@ -1149,14 +1192,14 @@ export default function SmartfloDialerApp() {
                   ) : (
                     <>
                       <button
-                        onClick={() => handleCampaignControl(activeCamp.id, "pause")}
+                        onClick={() => activeCamp?.id && handleCampaignControl(activeCamp.id, "pause")}
                         className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-xs font-semibold shadow-xs transition-colors"
                       >
                         <Pause className="w-3.5 h-3.5 fill-white" />
                         <span>Pause</span>
                       </button>
                       <button
-                        onClick={() => handleCampaignControl(activeCamp.id, "stop")}
+                        onClick={() => activeCamp?.id && handleCampaignControl(activeCamp.id, "stop")}
                         className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-xs transition-colors"
                       >
                         <Square className="w-3.5 h-3.5 fill-white" />
@@ -1166,7 +1209,7 @@ export default function SmartfloDialerApp() {
                   )}
 
                   <button
-                    onClick={() => handleRetryMissed(activeCamp.id)}
+                    onClick={() => activeCamp?.id && handleRetryMissed(activeCamp.id)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium shadow-2xs"
                     title="Retry all calls marked as Missed"
                   >
