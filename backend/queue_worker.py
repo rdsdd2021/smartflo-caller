@@ -87,7 +87,7 @@ class CampaignRunner:
             slot.started_at = None
 
     def start(self):
-        if self.status == "running":
+        if self._pool_task and not self._pool_task.done():
             return
         if self.status == "paused":
             self.resume()
@@ -111,10 +111,12 @@ class CampaignRunner:
             self._get_pause_event().clear()
 
     def resume(self):
-        if self.status == "paused":
+        if self._pool_task and not self._pool_task.done():
             self.status = "running"
             database.update_campaign_status(self.campaign_id, "running")
             self._get_pause_event().set()
+        else:
+            self.start()
 
     def stop(self):
         self.status = "stopped"
@@ -128,6 +130,7 @@ class CampaignRunner:
         self._worker_tasks = []
         if self._pool_task and not self._pool_task.done():
             self._pool_task.cancel()
+        self._pool_task = None
         self._reset_slots()
 
     async def _run_pool(self):
@@ -614,7 +617,7 @@ class MultiCampaignEngine:
 
     def start_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
-        if runner.status == "running":
+        if runner.status == "running" and runner._pool_task and not runner._pool_task.done():
             return {
                 "success": True, 
                 "status": "running", 
@@ -622,14 +625,12 @@ class MultiCampaignEngine:
                 "message": f"Campaign '{runner.campaign_data.get('name')}' is already running with {runner.concurrency} channels."
             }
 
-        # Mark runner as running so rebalance includes it
-        runner.status = "running"
-        database.update_campaign_status(campaign_id, "running")
+        # Start runner pool task first
+        runner.start()
 
         # Automatically calculate and apply fair channel distribution across the 15-channel trunk
         self.rebalance_channels()
 
-        runner.start()
         return {
             "success": True, 
             "status": "running", 
@@ -645,10 +646,8 @@ class MultiCampaignEngine:
 
     def resume_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
-        runner.status = "running"
-        database.update_campaign_status(campaign_id, "running")
-        self.rebalance_channels()
         runner.resume()
+        self.rebalance_channels()
         return {
             "success": True, 
             "status": runner.status,
