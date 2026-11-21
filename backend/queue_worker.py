@@ -213,7 +213,7 @@ class CampaignRunner:
                 did = self.get_next_did()
                 phone = lead["phone_number"]
                 name = lead.get("name", "")
-                call_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                call_time = database.get_now_ist_str()
 
                 # Update channel slot for live UI
                 slot.state = ChannelState.DIALING
@@ -393,7 +393,7 @@ class CampaignRunner:
                         "dtmf": dtmf_pressed,
                         "duration": final_duration,
                         "call_id": call_id,
-                        "call_time": call_time_str or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "call_time": call_time_str or database.get_now_ist_str(),
                         "did_used": did,
                         "error_message": f"Hangup: {hangup_cause}" if final_status != "completed" else None
                     })

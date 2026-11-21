@@ -1,8 +1,14 @@
 import sqlite3
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+
+# Indian Standard Time (IST, UTC+5:30) for accurate telecom timestamps
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_now_ist_str() -> str:
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "smartflo_db.sqlite"))
 
@@ -141,7 +147,7 @@ DEFAULT_SEED_RECORDINGS = [
 ]
 
 def cache_ivrs(ivrs: List[Dict[str, Any]]):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_now_ist_str()
     with get_connection() as conn:
         for ivr in ivrs:
             conn.execute("""
@@ -173,7 +179,7 @@ def get_cached_ivrs() -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
 
 def cache_recordings(recs: List[Dict[str, Any]]):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_now_ist_str()
     with get_connection() as conn:
         for r in recs:
             conn.execute("""
@@ -216,7 +222,7 @@ def create_campaign(
     google_sheet_name_col: Optional[str] = None
 ) -> Dict[str, Any]:
     cid = f"camp_{uuid.uuid4().hex[:8]}"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_now_ist_str()
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO campaigns (
@@ -247,7 +253,7 @@ def list_campaigns() -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
 
 def update_campaign_status(campaign_id: str, status: str):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_now_ist_str()
     with get_connection() as conn:
         conn.execute("UPDATE campaigns SET status = ?, updated_at = ? WHERE id = ?", (status, now, campaign_id))
         conn.commit()
@@ -267,7 +273,7 @@ def update_campaign_settings(campaign_id: str, updates: Dict[str, Any]) -> Optio
         return get_campaign(campaign_id)
         
     set_clause.append("updated_at = ?")
-    params.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    params.append(get_now_ist_str())
     params.append(campaign_id)
     
     with get_connection() as conn:
@@ -298,7 +304,7 @@ def sync_campaign_counters(campaign_id: str):
         completed = row["completed"] or 0
         answered = row["answered"] or 0
         missed = row["missed"] or 0
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = get_now_ist_str()
 
         conn.execute("""
             UPDATE campaigns SET 
@@ -316,7 +322,7 @@ def sync_campaign_counters(campaign_id: str):
 # -------------------------------------------------------------
 def bulk_insert_leads(campaign_id: str, leads_data: List[tuple]) -> int:
     """Inserts list of (phone, name, [optional sheet_row_index]) in a single atomic transaction."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = get_now_ist_str()
     records = []
     for item in leads_data:
         phone = item[0]

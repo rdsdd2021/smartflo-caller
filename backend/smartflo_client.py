@@ -3,10 +3,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import urllib3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from config import config
 import database
+
+# Indian Standard Time (IST, UTC+5:30) for Tata Smartflo PBX compatibility
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # Suppress insecure SSL warnings since we use verify=False to prevent cert expiry failures
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -98,8 +101,9 @@ class SmartfloClient:
         if self._cached_cdrs and (now - self._last_cdr_fetch_time < 1.2):
             return self._cached_cdrs
 
-        to_date = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-        from_date = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+        now_ist = datetime.now(IST)
+        to_date = (now_ist + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        from_date = (now_ist - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S")
         url = f"{self.BASE_URL}/v1/call/records?from_date={from_date}&to_date={to_date}&limit=100"
 
         try:
@@ -119,7 +123,7 @@ class SmartfloClient:
         """
         Queries recent CDR records.
         If ref_id is provided, matches the exact outbound click-to-call session by ref_id.
-        This guarantees that ongoing calls do not mistakenly bind to older historical calls.
+        Falls back to matching by 10-digit customer number.
         """
         results = self._get_recent_cdrs()
         clean_target = "".join(c for c in customer_number if c.isdigit())[-10:]
@@ -131,10 +135,8 @@ class SmartfloClient:
                 call_ref = str(call.get("ref_id") or "")
                 if call_ref and call_ref.strip() == target_ref:
                     return self._format_cdr(call)
-            # If ref_id was provided but not found in CDR yet, call is still active/ringing
-            return None
 
-        # 2. Number matching fallback if ref_id not provided
+        # 2. Number matching fallback if ref_id not matched yet
         for call in results:
             client_num = "".join(c for c in str(call.get("client_number") or "") if c.isdigit())
             if clean_target in client_num:

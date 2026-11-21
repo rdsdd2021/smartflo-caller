@@ -3,14 +3,17 @@ FROM python:3.12-slim
 # Prevent python from writing pyc files and buffering stdout
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Kolkata
 ENV DATABASE_PATH=/app/data/smartflo_db.sqlite
 ENV EXCEL_PATH=/app/data/smartflo_dtmf_records.xlsx
 
 WORKDIR /app
 
-# Install system dependencies if needed (e.g. curl for healthcheck)
+# Install system dependencies including tzdata and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies

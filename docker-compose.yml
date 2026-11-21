@@ -6,6 +6,7 @@ services:
     container_name: smartflo_backend
     restart: unless-stopped
     environment:
+      - TZ=Asia/Kolkata
       - PYTHONUNBUFFERED=1
       - DATABASE_PATH=/app/data/smartflo_db.sqlite
       - EXCEL_PATH=/app/data/smartflo_dtmf_records.xlsx
@@ -26,6 +27,8 @@ services:
       dockerfile: Dockerfile
     container_name: smartflo_frontend
     restart: unless-stopped
+    environment:
+      - TZ=Asia/Kolkata
     depends_on:
       backend:
         condition: service_healthy
