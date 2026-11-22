@@ -83,6 +83,7 @@ class GoogleSheetImportRequest(BaseModel):
     sheet_url: str
     phone_column: str
     name_column: Optional[str] = None
+    force_override: Optional[bool] = False
 
 class CreateIVRRequest(BaseModel):
     name: str
@@ -103,6 +104,7 @@ class ConcurrencyRequest(BaseModel):
 class ImportNumbersRequest(BaseModel):
     raw_text: Optional[str] = None
     numbers: Optional[List[dict]] = None
+    force_override: Optional[bool] = False
 
 class UploadAudioUrlRequest(BaseModel):
     audio_name: str
@@ -117,8 +119,22 @@ class AudienceFilterRule(BaseModel):
 class CheckCountRequest(BaseModel):
     filters: List[AudienceFilterRule] = []
 
+class SkippedLeadDetail(BaseModel):
+    phone_number: str
+    name: Optional[str] = ""
+    reason: str
+    details: Optional[str] = ""
+
+class IngestionSummaryResponse(BaseModel):
+    total_candidates: int = 0
+    enqueued_count: int = 0
+    skipped_count: int = 0
+    reasons: Dict[str, int] = {}
+    skipped_leads: List[SkippedLeadDetail] = []
+
 class ImportAudienceFilterRequest(BaseModel):
     filters: List[AudienceFilterRule] = []
+    force_override: Optional[bool] = False
 
 class CreateFieldMetaRequest(BaseModel):
     label: str
@@ -149,6 +165,13 @@ class CreateCampaignRequest(BaseModel):
     google_sheet_url: Optional[str] = None
     google_sheet_phone_col: Optional[str] = None
     google_sheet_name_col: Optional[str] = None
+    dedup_intra_campaign: Optional[bool] = True
+    dedup_cross_active: Optional[bool] = True
+    enable_cooldown: Optional[bool] = True
+    cooldown_answered_hours: Optional[int] = 24
+    cooldown_missed_hours: Optional[int] = 2
+    exclude_dnd: Optional[bool] = True
+    force_override: Optional[bool] = False
 
 class UpdateCampaignRequest(BaseModel):
     name: Optional[str] = None
@@ -162,6 +185,12 @@ class UpdateCampaignRequest(BaseModel):
     google_sheet_url: Optional[str] = None
     google_sheet_phone_col: Optional[str] = None
     google_sheet_name_col: Optional[str] = None
+    dedup_intra_campaign: Optional[bool] = None
+    dedup_cross_active: Optional[bool] = None
+    enable_cooldown: Optional[bool] = None
+    cooldown_answered_hours: Optional[int] = None
+    cooldown_missed_hours: Optional[int] = None
+    exclude_dnd: Optional[bool] = None
 
 class PaginatedLeadsResponse(BaseModel):
     items: List[Dict[str, Any]]

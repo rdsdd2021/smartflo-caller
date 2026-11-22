@@ -413,20 +413,40 @@ def create_new_campaign(payload: CreateCampaignRequest):
         inter_call_delay=payload.inter_call_delay,
         google_sheet_url=payload.google_sheet_url,
         google_sheet_phone_col=payload.google_sheet_phone_col,
-        google_sheet_name_col=payload.google_sheet_name_col
+        google_sheet_name_col=payload.google_sheet_name_col,
+        dedup_intra_campaign=payload.dedup_intra_campaign if payload.dedup_intra_campaign is not None else True,
+        dedup_cross_active=payload.dedup_cross_active if payload.dedup_cross_active is not None else True,
+        enable_cooldown=payload.enable_cooldown if payload.enable_cooldown is not None else True,
+        cooldown_answered_hours=payload.cooldown_answered_hours or 24,
+        cooldown_missed_hours=payload.cooldown_missed_hours or 2,
+        exclude_dnd=payload.exclude_dnd if payload.exclude_dnd is not None else True
     )
+    ingestion_summary = None
     # If audience filter criteria were specified, populate campaign leads from Supabase Contacts directory
     if payload.audience_filters:
         rules = [f.model_dump() for f in payload.audience_filters]
         try:
-            enqueued = contacts_service.populate_campaign_leads(camp["id"], rules)
-            camp["total_leads"] = enqueued
+            summary = contacts_service.populate_campaign_leads(
+                camp["id"],
+                rules,
+                force_override=bool(payload.force_override),
+                custom_policies={
+                    "dedup_intra_campaign": payload.dedup_intra_campaign,
+                    "dedup_cross_active": payload.dedup_cross_active,
+                    "enable_cooldown": payload.enable_cooldown,
+                    "cooldown_answered_hours": payload.cooldown_answered_hours,
+                    "cooldown_missed_hours": payload.cooldown_missed_hours,
+                    "exclude_dnd": payload.exclude_dnd
+                }
+            )
+            ingestion_summary = summary
+            camp["total_leads"] = summary.get("enqueued_count", 0)
         except Exception as e:
             print(f"[Supabase] Error populating campaign from audience filters: {e}")
 
     # Register in engine
     campaign_engine.get_runner(camp["id"])
-    return {"success": True, "campaign": camp}
+    return {"success": True, "campaign": camp, "ingestion_summary": ingestion_summary}
 
 @app.get("/api/campaigns/{campaign_id}")
 def get_campaign_detail(campaign_id: str):
@@ -563,23 +583,63 @@ def get_paginated_leads(
 @app.post("/api/campaigns/{campaign_id}/import-text")
 @app.post("/api/campaigns/{campaign_id}/import/text")
 def import_text(campaign_id: str, payload: ImportNumbersRequest):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
     if not payload.raw_text:
         raise HTTPException(status_code=400, detail="raw_text is required")
     parsed = parse_numbers_from_text(payload.raw_text)
     if not parsed:
         raise HTTPException(status_code=400, detail="No valid phone numbers found in input")
-    count = database.bulk_insert_leads(campaign_id, parsed)
-    return {"success": True, "count": count, "imported_leads": count}
+
+    candidates = [{"phone_number": p[0], "name": p[1] if len(p) > 1 else ""} for p in parsed]
+    policies = {
+        "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
+        "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
+        "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
+        "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
+        "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
+        "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
+        "force_override": bool(payload.force_override)
+    }
+    eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(candidates, campaign_id, policies)
+    count = 0
+    if eligible:
+        sqlite_batch = [(l["phone_number"], l["name"]) for l in eligible]
+        count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+    return {"success": True, "count": count, "imported_leads": count, "summary": summary}
 
 @app.post("/api/campaigns/{campaign_id}/upload-file")
 @app.post("/api/campaigns/{campaign_id}/import/file")
-async def upload_file(campaign_id: str, file: UploadFile = File(...)):
+async def upload_file(
+    campaign_id: str,
+    file: UploadFile = File(...),
+    force_override: Optional[bool] = Form(False)
+):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
     contents = await file.read()
     parsed = parse_numbers_from_file(contents, file.filename)
     if not parsed:
         raise HTTPException(status_code=400, detail="Could not find valid phone numbers in file")
-    count = database.bulk_insert_leads(campaign_id, parsed)
-    return {"success": True, "count": count, "imported_leads": count}
+
+    candidates = [{"phone_number": p[0], "name": p[1] if len(p) > 1 else ""} for p in parsed]
+    policies = {
+        "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
+        "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
+        "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
+        "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
+        "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
+        "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
+        "force_override": bool(force_override)
+    }
+    eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(candidates, campaign_id, policies)
+    count = 0
+    if eligible:
+        sqlite_batch = [(l["phone_number"], l["name"]) for l in eligible]
+        count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+    return {"success": True, "count": count, "imported_leads": count, "summary": summary}
 
 @app.post("/api/campaigns/{campaign_id}/sheets/inspect")
 def inspect_campaign_sheet(campaign_id: str, payload: GoogleSheetConnectRequest):
@@ -601,6 +661,9 @@ def delete_single_lead(campaign_id: str, lead_id: str):
 @app.post("/api/campaigns/{campaign_id}/import-sheet")
 @app.post("/api/campaigns/{campaign_id}/sheets/import")
 def import_sheet(campaign_id: str, payload: GoogleSheetImportRequest):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
     try:
         leads_data = google_sheets_service.import_leads(
             sheet_url=payload.sheet_url,
@@ -616,8 +679,27 @@ def import_sheet(campaign_id: str, payload: GoogleSheetImportRequest):
             "google_sheet_name_col": payload.name_column
         })
         
-        count = database.bulk_insert_leads(campaign_id, leads_data)
-        return {"success": True, "count": count, "imported_leads": count}
+        candidates = [{
+            "phone_number": p[0],
+            "name": p[1] if len(p) > 1 else "",
+            "sheet_row_index": p[2] if len(p) > 2 else None
+        } for p in leads_data]
+
+        policies = {
+            "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
+            "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
+            "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
+            "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
+            "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
+            "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
+            "force_override": bool(payload.force_override)
+        }
+        eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(candidates, campaign_id, policies)
+        count = 0
+        if eligible:
+            sqlite_batch = [(l["phone_number"], l["name"], l.get("sheet_row_index")) for l in eligible]
+            count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+        return {"success": True, "count": count, "imported_leads": count, "summary": summary}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -628,8 +710,58 @@ def import_campaign_audience(campaign_id: str, payload: ImportAudienceFilterRequ
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
     rules = [f.model_dump() for f in payload.filters]
-    count = contacts_service.populate_campaign_leads(campaign_id, rules)
-    return {"success": True, "count": count, "imported_leads": count}
+    summary = contacts_service.populate_campaign_leads(
+        campaign_id, rules, force_override=bool(payload.force_override)
+    )
+    count = summary.get("enqueued_count", 0)
+    return {"success": True, "count": count, "imported_leads": count, "summary": summary}
+
+@app.get("/api/campaigns/{campaign_id}/export-skipped")
+def export_skipped_leads(campaign_id: str):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    csv_content = contacts_service.export_skipped_leads_csv(campaign_id)
+    safe_name = "".join(c for c in camp["name"] if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=skipped_leads_{safe_name}.csv"}
+    )
+
+@app.post("/api/campaigns/{campaign_id}/force-enqueue-skipped")
+def force_enqueue_skipped_leads(campaign_id: str):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    skipped = contacts_service.get_skipped_leads(campaign_id)
+    if not skipped:
+        raise HTTPException(status_code=400, detail="No skipped leads in memory to force-enqueue.")
+
+    sqlite_batch = [(s["phone_number"], s.get("name", "")) for s in skipped]
+    count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+
+    # Sync to Supabase campaign_leads
+    try:
+        from supabase_client import supabase
+        supabase_batch = [{
+            "campaign_id": campaign_id,
+            "phone_number": s["phone_number"],
+            "name": s.get("name", ""),
+            "status": "pending"
+        } for s in skipped]
+        for i in range(0, len(supabase_batch), 1000):
+            supabase.insert("campaign_leads", supabase_batch[i:i+1000])
+    except Exception as e:
+        print(f"[Supabase] sync error: {e}")
+
+    contacts_service.clear_skipped_leads(campaign_id)
+    return {
+        "success": True,
+        "count": count,
+        "enqueued_count": count,
+        "message": f"Successfully forced and enqueued {count} previously skipped leads."
+    }
 
 # -------------------------------------------------------------
 # REPORTING & EXPORT WITH ADVANCED FILTERS

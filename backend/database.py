@@ -112,6 +112,19 @@ def init_db():
                     AND leads.dtmf IS NOT NULL AND leads.dtmf != '' AND leads.dtmf != 'None'
                 );
             """)
+        # Deduplication and Cooldown Policy Columns
+        if "dedup_intra_campaign" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN dedup_intra_campaign INTEGER NOT NULL DEFAULT 1;")
+        if "dedup_cross_active" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN dedup_cross_active INTEGER NOT NULL DEFAULT 1;")
+        if "enable_cooldown" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN enable_cooldown INTEGER NOT NULL DEFAULT 1;")
+        if "cooldown_answered_hours" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN cooldown_answered_hours INTEGER NOT NULL DEFAULT 24;")
+        if "cooldown_missed_hours" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN cooldown_missed_hours INTEGER NOT NULL DEFAULT 2;")
+        if "exclude_dnd" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN exclude_dnd INTEGER NOT NULL DEFAULT 1;")
 
         conn.commit()
 
@@ -228,7 +241,13 @@ def create_campaign(
     inter_call_delay: int = 3,
     google_sheet_url: Optional[str] = None,
     google_sheet_phone_col: Optional[str] = None,
-    google_sheet_name_col: Optional[str] = None
+    google_sheet_name_col: Optional[str] = None,
+    dedup_intra_campaign: bool = True,
+    dedup_cross_active: bool = True,
+    enable_cooldown: bool = True,
+    cooldown_answered_hours: int = 24,
+    cooldown_missed_hours: int = 2,
+    exclude_dnd: bool = True
 ) -> Dict[str, Any]:
     cid = f"camp_{uuid.uuid4().hex[:8]}"
     now = get_now_ist_str()
@@ -238,12 +257,20 @@ def create_campaign(
                 id, name, status, concurrency, ivr_id, ivr_name, api_key,
                 did_mode, single_did, inter_call_delay,
                 google_sheet_url, google_sheet_phone_col, google_sheet_name_col,
+                dedup_intra_campaign, dedup_cross_active, enable_cooldown,
+                cooldown_answered_hours, cooldown_missed_hours, exclude_dnd,
                 created_at, updated_at
-            ) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             cid, name, concurrency, ivr_id, ivr_name, api_key,
             did_mode, single_did, inter_call_delay,
             google_sheet_url, google_sheet_phone_col, google_sheet_name_col,
+            1 if dedup_intra_campaign else 0,
+            1 if dedup_cross_active else 0,
+            1 if enable_cooldown else 0,
+            cooldown_answered_hours,
+            cooldown_missed_hours,
+            1 if exclude_dnd else 0,
             now, now
         ))
         conn.commit()
@@ -270,14 +297,19 @@ def update_campaign_status(campaign_id: str, status: str):
 def update_campaign_settings(campaign_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     allowed = [
         "name", "concurrency", "ivr_id", "ivr_name", "api_key", "did_mode", "single_did",
-        "inter_call_delay", "google_sheet_url", "google_sheet_phone_col", "google_sheet_name_col"
+        "inter_call_delay", "google_sheet_url", "google_sheet_phone_col", "google_sheet_name_col",
+        "dedup_intra_campaign", "dedup_cross_active", "enable_cooldown",
+        "cooldown_answered_hours", "cooldown_missed_hours", "exclude_dnd"
     ]
     set_clause = []
     params = []
     for k, v in updates.items():
         if k in allowed:
             set_clause.append(f"{k} = ?")
-            params.append(v)
+            if isinstance(v, bool):
+                params.append(1 if v else 0)
+            else:
+                params.append(v)
     if not set_clause:
         return get_campaign(campaign_id)
         
@@ -289,6 +321,55 @@ def update_campaign_settings(campaign_id: str, updates: Dict[str, Any]) -> Optio
         conn.execute(f"UPDATE campaigns SET {', '.join(set_clause)} WHERE id = ?", params)
         conn.commit()
     return get_campaign(campaign_id)
+
+def get_existing_campaign_phone_numbers(campaign_id: str) -> set:
+    """Returns set of all normalized phone numbers already in this campaign."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT DISTINCT phone_number FROM leads WHERE campaign_id = ?", (campaign_id,)).fetchall()
+        return {r["phone_number"] for r in rows if r["phone_number"]}
+
+def get_active_campaign_phone_numbers(exclude_campaign_id: str = "") -> set:
+    """Returns set of all phone numbers currently active/pending/dialing in other running or paused campaigns."""
+    with get_connection() as conn:
+        query = """
+            SELECT DISTINCT l.phone_number 
+            FROM leads l
+            JOIN campaigns c ON l.campaign_id = c.id
+            WHERE c.status IN ('running', 'paused')
+            AND l.status IN ('pending', 'dialing', 'ringing', 'connected')
+        """
+        params = []
+        if exclude_campaign_id:
+            query += " AND c.id != ?"
+            params.append(exclude_campaign_id)
+        rows = conn.execute(query, params).fetchall()
+        return {r["phone_number"] for r in rows if r["phone_number"]}
+
+def get_recent_call_history_sqlite(phone_numbers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetches the latest call outcome and timestamp from local SQLite for cooldown evaluation."""
+    if not phone_numbers:
+        return {}
+    results = {}
+    with get_connection() as conn:
+        for i in range(0, len(phone_numbers), 400):
+            chunk = phone_numbers[i:i+400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(f"""
+                SELECT phone_number, status, call_time 
+                FROM leads 
+                WHERE phone_number IN ({placeholders})
+                AND status NOT IN ('pending', 'dialing', 'ringing')
+                AND call_time IS NOT NULL AND call_time != ''
+                ORDER BY call_time DESC
+            """, chunk).fetchall()
+            for r in rows:
+                p = r["phone_number"]
+                if p not in results:
+                    results[p] = {
+                        "status": r["status"],
+                        "call_time": r["call_time"]
+                    }
+    return results
 
 def delete_campaign(campaign_id: str) -> bool:
     with get_connection() as conn:

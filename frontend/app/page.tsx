@@ -35,9 +35,12 @@ import {
   Users,
   ShieldAlert,
   ShieldCheck,
+  Shield,
+  Zap,
   LogOut,
   KeyRound,
-  ChevronDown
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import UserManagementModal from "../components/UserManagementModal";
@@ -208,6 +211,16 @@ export default function SmartfloDialerApp() {
   const [newCampAudienceFilters, setNewCampAudienceFilters] = useState<FilterRule[]>([]);
   const [newCampAudienceCount, setNewCampAudienceCount] = useState<number | null>(null);
 
+  // New Campaign Deduplication & Cooldown Rules
+  const [newCampDedupIntra, setNewCampDedupIntra] = useState(true);
+  const [newCampDedupCross, setNewCampDedupCross] = useState(true);
+  const [newCampEnableCooldown, setNewCampEnableCooldown] = useState(true);
+  const [newCampCooldownAnswered, setNewCampCooldownAnswered] = useState(24);
+  const [newCampCooldownMissed, setNewCampCooldownMissed] = useState(2);
+  const [newCampExcludeDnd, setNewCampExcludeDnd] = useState(true);
+  const [newCampForceOverride, setNewCampForceOverride] = useState(false);
+  const [isDedupAccordionOpen, setIsDedupAccordionOpen] = useState(false);
+
   // Lead Timeline Drawer State
   const [selectedTimelineContact, setSelectedTimelineContact] = useState<{ id: string; phone?: string } | null>(null);
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
@@ -220,6 +233,23 @@ export default function SmartfloDialerApp() {
   const [editDelay, setEditDelay] = useState(3);
   const [editDidMode, setEditDidMode] = useState("round_robin");
   const [editSingleDid, setEditSingleDid] = useState("917965561295");
+  const [editDedupIntra, setEditDedupIntra] = useState(true);
+  const [editDedupCross, setEditDedupCross] = useState(true);
+  const [editEnableCooldown, setEditEnableCooldown] = useState(true);
+  const [editCooldownAnswered, setEditCooldownAnswered] = useState(24);
+  const [editCooldownMissed, setEditCooldownMissed] = useState(2);
+  const [editExcludeDnd, setEditExcludeDnd] = useState(true);
+
+  // Ingestion Summary Modal State
+  const [ingestionSummary, setIngestionSummary] = useState<{
+    total_candidates: number;
+    enqueued_count: number;
+    skipped_count: number;
+    reasons: Record<string, number>;
+    skipped_leads?: Array<{ phone_number: string; name?: string; reason: string; details?: string }>;
+  } | null>(null);
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
+  const [isForceEnqueuing, setIsForceEnqueuing] = useState(false);
 
   // Paginated Leads Table
   const [leadsList, setLeadsList] = useState<LeadItem[]>([]);
@@ -453,6 +483,12 @@ export default function SmartfloDialerApp() {
           setEditDelay(data.inter_call_delay ?? 3);
           setEditDidMode(data.did_mode || "round_robin");
           setEditSingleDid(data.single_did || "917965561295");
+          setEditDedupIntra(data.dedup_intra_campaign !== 0);
+          setEditDedupCross(data.dedup_cross_active !== 0);
+          setEditEnableCooldown(data.enable_cooldown !== 0);
+          setEditCooldownAnswered(data.cooldown_answered_hours ?? 24);
+          setEditCooldownMissed(data.cooldown_missed_hours ?? 2);
+          setEditExcludeDnd(data.exclude_dnd !== 0);
         }
       }
     } catch {}
@@ -550,7 +586,14 @@ export default function SmartfloDialerApp() {
           did_mode: newCampDidMode,
           single_did: newCampSingleDid,
           inter_call_delay: newCampDelay,
-          audience_filters: newCampAudienceFilters
+          audience_filters: newCampAudienceFilters,
+          dedup_intra_campaign: newCampDedupIntra,
+          dedup_cross_active: newCampDedupCross,
+          enable_cooldown: newCampEnableCooldown,
+          cooldown_answered_hours: newCampCooldownAnswered,
+          cooldown_missed_hours: newCampCooldownMissed,
+          exclude_dnd: newCampExcludeDnd,
+          force_override: newCampForceOverride
         })
       });
       const data = await res.json();
@@ -563,6 +606,10 @@ export default function SmartfloDialerApp() {
         await fetchCampaignsList();
         setSelectedCampaignId(data.campaign.id);
         setCampaignTab("overview");
+        if (data.ingestion_summary) {
+          setIngestionSummary(data.ingestion_summary);
+          setIsSummaryModalOpen(true);
+        }
       } else {
         showNotification(data.detail || "Failed to create campaign", "error");
       }
@@ -587,7 +634,13 @@ export default function SmartfloDialerApp() {
           api_key: editApiKey.trim(),
           inter_call_delay: editDelay,
           did_mode: editDidMode,
-          single_did: editSingleDid
+          single_did: editSingleDid,
+          dedup_intra_campaign: editDedupIntra,
+          dedup_cross_active: editDedupCross,
+          enable_cooldown: editEnableCooldown,
+          cooldown_answered_hours: editCooldownAnswered,
+          cooldown_missed_hours: editCooldownMissed,
+          exclude_dnd: editExcludeDnd
         })
       });
       if (res.ok) {
@@ -706,6 +759,10 @@ export default function SmartfloDialerApp() {
         fetchCampaignsList();
         fetchCampaignDetail(selectedCampaignId, false);
         fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "", "all");
+        if (data.summary) {
+          setIngestionSummary(data.summary);
+          setIsSummaryModalOpen(true);
+        }
       } else {
         showNotification(data.detail || "Failed to queue leads", "error");
       }
@@ -782,6 +839,10 @@ export default function SmartfloDialerApp() {
         setLeadsSearch("");
         fetchCampaignDetail(selectedCampaignId, false);
         fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+        if (data.summary) {
+          setIngestionSummary(data.summary);
+          setIsSummaryModalOpen(true);
+        }
       } else {
         showNotification(data.detail || data.message || "Import failed.", "error");
       }
@@ -821,6 +882,10 @@ export default function SmartfloDialerApp() {
         setLeadsSearch("");
         fetchCampaignDetail(selectedCampaignId, false);
         fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+        if (data.summary) {
+          setIngestionSummary(data.summary);
+          setIsSummaryModalOpen(true);
+        }
       } else {
         showNotification(data.detail || data.message || "Failed to import numbers.", "error");
       }
@@ -857,6 +922,10 @@ export default function SmartfloDialerApp() {
         setLeadsSearch("");
         fetchCampaignDetail(selectedCampaignId, false);
         fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+        if (data.summary) {
+          setIngestionSummary(data.summary);
+          setIsSummaryModalOpen(true);
+        }
       } else {
         showNotification(data.detail || data.message || "Failed to process file.", "error");
       }
@@ -866,6 +935,42 @@ export default function SmartfloDialerApp() {
       setIsLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const handleForceEnqueueSkipped = async () => {
+    if (!selectedCampaignId) return;
+    setIsForceEnqueuing(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/force-enqueue-skipped`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Successfully force-queued ${data.enqueued_count} leads!`, "success");
+        if (ingestionSummary) {
+          setIngestionSummary({
+            ...ingestionSummary,
+            enqueued_count: ingestionSummary.enqueued_count + (ingestionSummary.skipped_count || 0),
+            skipped_count: 0,
+            reasons: {}
+          });
+        }
+        fetchCampaignsList();
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "", "all");
+      } else {
+        showNotification(data.detail || "Failed to force enqueue", "error");
+      }
+    } catch (e: any) {
+      showNotification(`Error: ${e?.message}`, "error");
+    } finally {
+      setIsForceEnqueuing(false);
+    }
+  };
+
+  const handleDownloadSkippedCSV = () => {
+    if (!selectedCampaignId) return;
+    window.open(`${API_BASE}/campaigns/${selectedCampaignId}/export-skipped`, "_blank");
   };
 
   // Export Download Trigger
@@ -1789,6 +1894,104 @@ export default function SmartfloDialerApp() {
                   )}
                 </div>
 
+                {/* Deduplication & Cooldown Policy for Active Campaign */}
+                <div className="pt-4 border-t border-slate-100 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-indigo-600" />
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-900">Lead Deduplication & Cooldown Policy</h3>
+                      <p className="text-[11px] text-slate-500">Controls rules applied when adding new leads via audience segments, files, or sheets.</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <label className="flex items-start gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50/50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editDedupIntra}
+                        onChange={(e) => setEditDedupIntra(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800">Intra-Campaign Deduplication</span>
+                        <p className="text-[11px] text-slate-500">Do not add numbers that already exist in this campaign.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50/50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editDedupCross}
+                        onChange={(e) => setEditDedupCross(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800">Cross-Campaign Active Collision Guard</span>
+                        <p className="text-[11px] text-slate-500">Exclude numbers currently queued or dialing in other campaigns.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50/50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editEnableCooldown}
+                        onChange={(e) => setEditEnableCooldown(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800">Outcome-Aware Cooldown</span>
+                        <p className="text-[11px] text-slate-500">Prevent burning leads with calls too soon after recent attempts.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 p-3 rounded-lg border border-slate-200 bg-slate-50/50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editExcludeDnd}
+                        onChange={(e) => setEditExcludeDnd(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800">Exclude DND / Opt-Out Contacts</span>
+                        <p className="text-[11px] text-slate-500">Skip contacts flagged as Do-Not-Disturb in the CRM.</p>
+                      </div>
+                    </label>
+                  </div>
+
+                  {editEnableCooldown && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3 bg-indigo-50/40 border border-indigo-100 rounded-lg">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Cooldown After Answered Call (Hours)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="720"
+                          value={editCooldownAnswered}
+                          onChange={(e) => setEditCooldownAnswered(Math.max(1, Number(e.target.value)))}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-mono"
+                        />
+                        <span className="text-[11px] text-slate-500">Hours to wait after a completed or answered conversation.</span>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Cooldown After Missed / Busy Call (Hours)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="168"
+                          value={editCooldownMissed}
+                          onChange={(e) => setEditCooldownMissed(Math.max(0, Number(e.target.value)))}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-mono"
+                        />
+                        <span className="text-[11px] text-slate-500">Hours to wait after a missed, rejected, or unanswered call.</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="text-xs">
                     {activeCampaignDetail && (
@@ -1797,7 +2000,13 @@ export default function SmartfloDialerApp() {
                       activeCampaignDetail.concurrency !== editConcurrency ||
                       activeCampaignDetail.api_key !== editApiKey ||
                       activeCampaignDetail.ivr_id !== editIVRId ||
-                      activeCampaignDetail.inter_call_delay !== editDelay
+                      activeCampaignDetail.inter_call_delay !== editDelay ||
+                      activeCampaignDetail.dedup_intra_campaign !== (editDedupIntra ? 1 : 0) ||
+                      activeCampaignDetail.dedup_cross_active !== (editDedupCross ? 1 : 0) ||
+                      activeCampaignDetail.enable_cooldown !== (editEnableCooldown ? 1 : 0) ||
+                      activeCampaignDetail.cooldown_answered_hours !== editCooldownAnswered ||
+                      activeCampaignDetail.cooldown_missed_hours !== editCooldownMissed ||
+                      activeCampaignDetail.exclude_dnd !== (editExcludeDnd ? 1 : 0)
                     ) ? (
                       <span className="inline-flex items-center gap-1.5 text-amber-700 font-medium bg-amber-50 px-2.5 py-1 rounded-md border border-amber-200">
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
@@ -2558,6 +2767,135 @@ export default function SmartfloDialerApp() {
                 />
               </div>
 
+              {/* Collapsible Deduplication & Cooldown Rules Card */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50/50">
+                <button
+                  type="button"
+                  onClick={() => setIsDedupAccordionOpen(!isDedupAccordionOpen)}
+                  className="w-full flex items-center justify-between p-3 text-left hover:bg-slate-100/60 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-indigo-600" />
+                    <div>
+                      <span className="font-semibold text-slate-800">Deduplication & Cooldown Rules</span>
+                      <p className="text-[11px] text-slate-500">Prevent lead fatigue, duplicate calls, and concurrent dialing</p>
+                    </div>
+                  </div>
+                  {isDedupAccordionOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                </button>
+
+                {isDedupAccordionOpen && (
+                  <div className="p-3 border-t border-slate-200 bg-white space-y-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newCampDedupIntra}
+                        onChange={(e) => setNewCampDedupIntra(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="font-medium text-slate-800">Intra-Campaign Deduplication</span>
+                        <p className="text-[11px] text-slate-500">Exclude phone numbers already present in this campaign&apos;s lead list.</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newCampDedupCross}
+                        onChange={(e) => setNewCampDedupCross(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="font-medium text-slate-800">Cross-Campaign Active Collision Guard</span>
+                        <p className="text-[11px] text-slate-500">Exclude numbers currently queued or dialing in another active campaign.</p>
+                      </div>
+                    </label>
+
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newCampEnableCooldown}
+                          onChange={(e) => setNewCampEnableCooldown(e.target.checked)}
+                          className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <div>
+                          <span className="font-medium text-slate-800">Smart Outcome-Aware Cooldown</span>
+                          <p className="text-[11px] text-slate-500">Protect contacts from repetitive calls based on their last call outcome.</p>
+                        </div>
+                      </label>
+
+                      {newCampEnableCooldown && (
+                        <div className="grid grid-cols-2 gap-3 pl-6 pt-1">
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600 mb-1">Answered Call Cooldown:</label>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="1"
+                                max="720"
+                                value={newCampCooldownAnswered}
+                                onChange={(e) => setNewCampCooldownAnswered(Math.max(1, Number(e.target.value)))}
+                                className="w-20 bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-900 font-mono"
+                              />
+                              <span className="text-[11px] text-slate-500">hours (Default: 24h)</span>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600 mb-1">Missed / Busy Cooldown:</label>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0"
+                                max="168"
+                                value={newCampCooldownMissed}
+                                onChange={(e) => setNewCampCooldownMissed(Math.max(0, Number(e.target.value)))}
+                                className="w-20 bg-white border border-slate-200 rounded p-1.5 text-xs text-slate-900 font-mono"
+                              />
+                              <span className="text-[11px] text-slate-500">hours (Default: 2h)</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer pt-1 border-t border-slate-100">
+                      <input
+                        type="checkbox"
+                        checked={newCampExcludeDnd}
+                        onChange={(e) => setNewCampExcludeDnd(e.target.checked)}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <span className="font-medium text-slate-800">Exclude DND / Opt-Out Contacts</span>
+                        <p className="text-[11px] text-slate-500">Skip contacts flagged as Do-Not-Disturb in the CRM directory.</p>
+                      </div>
+                    </label>
+
+                    <div className="p-2.5 rounded-lg bg-amber-50/80 border border-amber-200/80 mt-2">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newCampForceOverride}
+                          onChange={(e) => setNewCampForceOverride(e.target.checked)}
+                          className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+                        />
+                        <div>
+                          <span className="font-bold text-amber-900 flex items-center gap-1.5">
+                            <Zap className="w-3.5 h-3.5 text-amber-600" />
+                            Force Override Power Mode
+                          </span>
+                          <p className="text-[11px] text-amber-700">
+                            Bypass ALL deduplication, collision, and cooldown rules. Force-add every lead regardless of prior calls.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Audience Segmentation & Live Check Count Filter Builder */}
               <AudienceFilterBuilder
                 apiBase={API_BASE}
@@ -2691,6 +3029,121 @@ export default function SmartfloDialerApp() {
         onClose={() => setIsChangePasswordOpen(false)}
         apiBase={API_BASE}
       />
+
+      {/* ======================================================== */}
+      {/* MODAL 6: INGESTION REPORT & DEDUPLICATION BREAKDOWN      */}
+      {/* ======================================================== */}
+      {isSummaryModalOpen && ingestionSummary && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xl max-w-lg w-full space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+                  <FileSpreadsheet className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900">Lead Ingestion Report</h3>
+                  <p className="text-[11px] text-slate-500">Deduplication & Cooldown breakdown</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSummaryModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 rounded-lg p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* KPI Cards */}
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Total Evaluated</span>
+                <p className="text-xl font-extrabold text-slate-900 mt-0.5">{ingestionSummary.total_candidates.toLocaleString()}</p>
+              </div>
+              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200/80">
+                <span className="text-[10px] uppercase font-bold text-emerald-600 tracking-wider">Enqueued</span>
+                <p className="text-xl font-extrabold text-emerald-700 mt-0.5">{ingestionSummary.enqueued_count.toLocaleString()}</p>
+              </div>
+              <div className={`p-3 rounded-xl border ${ingestionSummary.skipped_count > 0 ? "bg-amber-50 border-amber-200/80" : "bg-slate-50 border-slate-200/80"}`}>
+                <span className={`text-[10px] uppercase font-bold tracking-wider ${ingestionSummary.skipped_count > 0 ? "text-amber-700" : "text-slate-500"}`}>Skipped</span>
+                <p className={`text-xl font-extrabold mt-0.5 ${ingestionSummary.skipped_count > 0 ? "text-amber-700" : "text-slate-600"}`}>{ingestionSummary.skipped_count.toLocaleString()}</p>
+              </div>
+            </div>
+
+            {/* Reasons Breakdown */}
+            {ingestionSummary.skipped_count > 0 && (
+              <div className="space-y-2 bg-slate-50/60 p-3.5 rounded-xl border border-slate-200/70 text-xs">
+                <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wider block mb-1">
+                  Why Were Leads Skipped?
+                </span>
+                <div className="space-y-1.5">
+                  {(ingestionSummary.reasons.intra_campaign_duplicate ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                      <span>Already in this campaign</span>
+                      <span className="font-bold font-mono text-slate-900">{ingestionSummary.reasons.intra_campaign_duplicate}</span>
+                    </div>
+                  )}
+                  {(ingestionSummary.reasons.cross_active_conflict ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                      <span>Active in another running campaign</span>
+                      <span className="font-bold font-mono text-amber-700">{ingestionSummary.reasons.cross_active_conflict}</span>
+                    </div>
+                  )}
+                  {(ingestionSummary.reasons.cooldown_answered ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                      <span>In Cooldown (Answered call &lt; 24h ago)</span>
+                      <span className="font-bold font-mono text-indigo-700">{ingestionSummary.reasons.cooldown_answered}</span>
+                    </div>
+                  )}
+                  {(ingestionSummary.reasons.cooldown_missed ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                      <span>In Cooldown (Missed call &lt; 2h ago)</span>
+                      <span className="font-bold font-mono text-purple-700">{ingestionSummary.reasons.cooldown_missed}</span>
+                    </div>
+                  )}
+                  {(ingestionSummary.reasons.dnd_excluded ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/60">
+                      <span>DND / Opt-Out Contact</span>
+                      <span className="font-bold font-mono text-rose-700">{ingestionSummary.reasons.dnd_excluded}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              {ingestionSummary.skipped_count > 0 && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDownloadSkippedCSV}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download Skipped (CSV)</span>
+                  </button>
+
+                  <button
+                    onClick={handleForceEnqueueSkipped}
+                    disabled={isForceEnqueuing}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs shadow-xs transition-colors disabled:opacity-50"
+                  >
+                    {isForceEnqueuing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                    <span>Force Queue All Anyway</span>
+                  </button>
+                </div>
+              )}
+
+              <button
+                onClick={() => setIsSummaryModalOpen(false)}
+                className="w-full py-2 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs shadow-xs transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

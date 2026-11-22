@@ -4,9 +4,32 @@ Handles 100k-200k leads, dynamic JSONB filtering, live audience counts, and time
 """
 import uuid
 import re
-from typing import List, Dict, Any, Optional
+import io
+import csv
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 from supabase_client import supabase
+
+def parse_call_datetime(dt_val: Any) -> Optional[datetime]:
+    if not dt_val:
+        return None
+    s = str(dt_val).strip()
+    if not s or s.lower() in ("none", "null"):
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        pass
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        from database import IST
+        return dt.replace(tzinfo=IST)
+    except Exception:
+        pass
+    return None
 
 def sanitize_phone(phone: Any) -> str:
     """Normalizes phone numbers to standard 10-12 digit string."""
@@ -441,24 +464,232 @@ class ContactsService:
         }
 
     # -------------------------------------------------------------
-    # 5. POPULATE CAMPAIGN FROM AUDIENCE SEGMENT
+    # 5. DEDUPLICATION, COOLDOWN EVALUATION & CAMPAIGN POPULATION
     # -------------------------------------------------------------
-    def populate_campaign_leads(self, campaign_id: str, filter_rules: List[Dict[str, Any]]) -> int:
+    _skipped_leads_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+    def get_skipped_leads(self, campaign_id: str) -> List[Dict[str, Any]]:
+        """Returns cached skipped leads from the most recent import for this campaign."""
+        return self._skipped_leads_cache.get(campaign_id, [])
+
+    def clear_skipped_leads(self, campaign_id: str):
+        """Clears cached skipped leads for a campaign."""
+        self._skipped_leads_cache.pop(campaign_id, None)
+
+    def export_skipped_leads_csv(self, campaign_id: str) -> str:
+        """Generates downloadable CSV content of skipped leads from the last import."""
+        leads = self.get_skipped_leads(campaign_id)
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Phone Number", "Name", "Reason", "Details", "Skipped At"])
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        for lead in leads:
+            writer.writerow([
+                lead.get("phone_number", ""),
+                lead.get("name", ""),
+                lead.get("reason", ""),
+                lead.get("details", ""),
+                lead.get("skipped_at", now_str)
+            ])
+        return output.getvalue()
+
+    def evaluate_lead_eligibility(
+        self,
+        candidates: List[Dict[str, Any]],
+        campaign_id: str,
+        policies: Dict[str, Any]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Loads matching contacts from the Master Contacts directory into a campaign's run queue.
-        Populates SQLite leads table for local dialer execution AND syncs Supabase campaign_leads.
+        Evaluates candidate leads against deduplication and cooldown policies:
+        1. Force override: bypasses all checks.
+        2. Intra-campaign deduplication: excludes numbers already present in this campaign.
+        3. Cross-campaign collision prevention: excludes numbers currently active/dialing in other campaigns.
+        4. DND exclusion: excludes contacts marked DND/opt-out.
+        5. Outcome-aware cooldown: enforces 24h cooldown after answered calls and 2h cooldown after missed calls.
+        """
+        import database
+        now_utc = datetime.now(timezone.utc)
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        force_override = bool(policies.get("force_override", False))
+        dedup_intra = bool(policies.get("dedup_intra_campaign", True))
+        dedup_cross = bool(policies.get("dedup_cross_active", True))
+        enable_cooldown = bool(policies.get("enable_cooldown", True))
+        cooldown_answered_hours = int(policies.get("cooldown_answered_hours", 24) if policies.get("cooldown_answered_hours") is not None else 24)
+        cooldown_missed_hours = int(policies.get("cooldown_missed_hours", 2) if policies.get("cooldown_missed_hours") is not None else 2)
+        exclude_dnd = bool(policies.get("exclude_dnd", True))
+
+        existing_phones = database.get_existing_campaign_phone_numbers(campaign_id) if (dedup_intra and not force_override) else set()
+        active_phones = database.get_active_campaign_phone_numbers(exclude_campaign_id=campaign_id) if (dedup_cross and not force_override) else set()
+
+        seen_batch_phones = set()
+        eligible_leads: List[Dict[str, Any]] = []
+        skipped_leads: List[Dict[str, Any]] = []
+
+        # Find any leads without call history so we can check local SQLite history
+        missing_history_phones = [
+            c["phone_number"] for c in candidates 
+            if c.get("phone_number") and not c.get("last_call_status") and not c.get("last_call_time")
+        ]
+        sqlite_history = {}
+        if missing_history_phones and enable_cooldown and not force_override:
+            sqlite_history = database.get_recent_call_history_sqlite(missing_history_phones)
+
+        for cand in candidates:
+            raw_phone = cand.get("phone_number")
+            phone = sanitize_phone(raw_phone)
+            if not phone:
+                continue
+
+            name = cand.get("name") or ""
+            lead_item = {
+                "phone_number": phone,
+                "name": name,
+                "contact_id": cand.get("contact_id") or cand.get("id"),
+                "sheet_row_index": cand.get("sheet_row_index")
+            }
+
+            # 1. Force Override Check
+            if force_override:
+                seen_batch_phones.add(phone)
+                eligible_leads.append(lead_item)
+                continue
+
+            # 2. Intra-campaign deduplication
+            if dedup_intra:
+                if phone in existing_phones:
+                    skipped_leads.append({
+                        "phone_number": phone,
+                        "name": name,
+                        "reason": "intra_campaign_duplicate",
+                        "details": "Already present in this campaign's lead list",
+                        "skipped_at": now_str
+                    })
+                    continue
+                if phone in seen_batch_phones:
+                    skipped_leads.append({
+                        "phone_number": phone,
+                        "name": name,
+                        "reason": "intra_campaign_duplicate",
+                        "details": "Duplicate number within this import batch",
+                        "skipped_at": now_str
+                    })
+                    continue
+
+            # 3. Cross-campaign active dial collision prevention
+            if dedup_cross and phone in active_phones:
+                skipped_leads.append({
+                    "phone_number": phone,
+                    "name": name,
+                    "reason": "cross_active_conflict",
+                    "details": "Currently queued or in-call in another active campaign",
+                    "skipped_at": now_str
+                })
+                continue
+
+            # 4. DND / Opt-Out exclusion
+            if exclude_dnd:
+                attrs = cand.get("attributes") or {}
+                dnd_val = attrs.get("dnd") or attrs.get("is_dnd") or attrs.get("do_not_disturb")
+                if dnd_val and str(dnd_val).lower() in ["true", "1", "yes"]:
+                    skipped_leads.append({
+                        "phone_number": phone,
+                        "name": name,
+                        "reason": "dnd_excluded",
+                        "details": "Contact marked DND / Opt-out in CRM",
+                        "skipped_at": now_str
+                    })
+                    continue
+
+            # 5. Outcome-Aware Cooldown
+            if enable_cooldown:
+                last_status = (cand.get("last_call_status") or "").lower()
+                last_time_str = cand.get("last_call_time")
+
+                if (not last_time_str or not last_status) and phone in sqlite_history:
+                    last_status = (sqlite_history[phone].get("status") or "").lower()
+                    last_time_str = sqlite_history[phone].get("call_time")
+
+                if last_time_str:
+                    dt = parse_call_datetime(last_time_str)
+                    if dt:
+                        elapsed_hours = max(0.0, (now_utc - dt.astimezone(timezone.utc)).total_seconds() / 3600.0)
+                        if last_status in ["answered", "completed"]:
+                            if elapsed_hours < cooldown_answered_hours:
+                                rem = round(cooldown_answered_hours - elapsed_hours, 1)
+                                skipped_leads.append({
+                                    "phone_number": phone,
+                                    "name": name,
+                                    "reason": "cooldown_answered",
+                                    "details": f"Answered call {round(elapsed_hours, 1)}h ago ({cooldown_answered_hours}h cooldown, {rem}h remaining)",
+                                    "skipped_at": now_str
+                                })
+                                continue
+                        elif last_status in ["missed", "no_answer", "busy", "rejected", "unreachable", "quick_hangup", "failed"]:
+                            if elapsed_hours < cooldown_missed_hours:
+                                rem = round(cooldown_missed_hours - elapsed_hours, 1)
+                                skipped_leads.append({
+                                    "phone_number": phone,
+                                    "name": name,
+                                    "reason": "cooldown_missed",
+                                    "details": f"Missed call {round(elapsed_hours, 1)}h ago ({cooldown_missed_hours}h cooldown, {rem}h remaining)",
+                                    "skipped_at": now_str
+                                })
+                                continue
+
+            seen_batch_phones.add(phone)
+            eligible_leads.append(lead_item)
+
+        # Cache skipped leads for this campaign
+        self._skipped_leads_cache[campaign_id] = skipped_leads
+
+        summary = {
+            "total_candidates": len(candidates),
+            "enqueued_count": len(eligible_leads),
+            "skipped_count": len(skipped_leads),
+            "reasons": {
+                "intra_campaign_duplicate": sum(1 for s in skipped_leads if s["reason"] == "intra_campaign_duplicate"),
+                "cross_active_conflict": sum(1 for s in skipped_leads if s["reason"] == "cross_active_conflict"),
+                "cooldown_answered": sum(1 for s in skipped_leads if s["reason"] == "cooldown_answered"),
+                "cooldown_missed": sum(1 for s in skipped_leads if s["reason"] == "cooldown_missed"),
+                "dnd_excluded": sum(1 for s in skipped_leads if s["reason"] == "dnd_excluded")
+            },
+            "skipped_leads": skipped_leads
+        }
+
+        return eligible_leads, skipped_leads, summary
+
+    def populate_campaign_leads(
+        self,
+        campaign_id: str,
+        filter_rules: List[Dict[str, Any]],
+        force_override: bool = False,
+        custom_policies: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Loads matching contacts from the Master Contacts directory, applies deduplication
+        and cooldown policies, and populates both SQLite and Supabase campaign tables.
+        Returns IngestionSummary dict.
         """
         import database
 
-        params = self._build_postgrest_filters(filter_rules)
-        params["select"] = "id,phone_number,name"
-        offset = 0
-        limit = 2000
-        total_enqueued = 0
+        camp_sqlite = database.get_campaign(campaign_id) or {}
+        policies = {
+            "dedup_intra_campaign": camp_sqlite.get("dedup_intra_campaign", 1) == 1,
+            "dedup_cross_active": camp_sqlite.get("dedup_cross_active", 1) == 1,
+            "enable_cooldown": camp_sqlite.get("enable_cooldown", 1) == 1,
+            "cooldown_answered_hours": camp_sqlite.get("cooldown_answered_hours", 24),
+            "cooldown_missed_hours": camp_sqlite.get("cooldown_missed_hours", 2),
+            "exclude_dnd": camp_sqlite.get("exclude_dnd", 1) == 1,
+            "force_override": force_override
+        }
+        if custom_policies:
+            policies.update(custom_policies)
+        if force_override:
+            policies["force_override"] = True
 
         # Ensure campaign exists in Supabase to avoid foreign key errors
         try:
-            camp_sqlite = database.get_campaign(campaign_id)
             if camp_sqlite:
                 supabase.upsert("campaigns", {
                     "id": campaign_id,
@@ -475,50 +706,56 @@ class ContactsService:
         except Exception as e:
             print(f"[Supabase] campaign upsert notice: {e}")
 
+        # Fetch candidate contacts
+        params = self._build_postgrest_filters(filter_rules)
+        params["select"] = "id,phone_number,name,last_call_status,last_call_time,attributes"
+        offset = 0
+        limit = 2000
+        raw_candidates: List[Dict[str, Any]] = []
+
         while True:
             params["offset"] = offset
             params["limit"] = limit
             contacts = supabase.select("contacts", params)
             if not contacts:
                 break
-
-            sqlite_batch = []
-            supabase_batch = []
-            for c in contacts:
-                phone = sanitize_phone(c.get("phone_number"))
-                if not phone:
-                    continue
-                name = c.get("name") or ""
-                sqlite_batch.append((phone, name))
-                supabase_batch.append({
-                    "campaign_id": campaign_id,
-                    "contact_id": c["id"],
-                    "phone_number": phone,
-                    "name": name,
-                    "status": "pending"
-                })
-
-            if sqlite_batch:
-                # Insert directly into SQLite database for dialer engine and paginated leads table
-                count = database.bulk_insert_leads(campaign_id, sqlite_batch)
-                total_enqueued += count
-
-            if supabase_batch:
-                try:
-                    supabase.insert("campaign_leads", supabase_batch)
-                except Exception as e:
-                    print(f"[Supabase] Error syncing to campaign_leads: {e}")
-
+            raw_candidates.extend(contacts)
             if len(contacts) < limit:
                 break
             offset += limit
 
+        eligible_leads, skipped_leads, summary = self.evaluate_lead_eligibility(
+            raw_candidates, campaign_id, policies
+        )
+
+        # Bulk insert eligible leads into SQLite
+        if eligible_leads:
+            sqlite_batch = [(l["phone_number"], l["name"]) for l in eligible_leads]
+            database.bulk_insert_leads(campaign_id, sqlite_batch)
+
+            # Sync to Supabase campaign_leads in chunks
+            supabase_batch = [{
+                "campaign_id": campaign_id,
+                "contact_id": l.get("contact_id") or l.get("id"),
+                "phone_number": l["phone_number"],
+                "name": l["name"],
+                "status": "pending"
+            } for l in eligible_leads]
+            for i in range(0, len(supabase_batch), 1000):
+                chunk = supabase_batch[i:i+1000]
+                try:
+                    supabase.insert("campaign_leads", chunk)
+                except Exception as ex:
+                    print(f"[Supabase] campaign_leads sync notice: {ex}")
+
         # Update total_leads counter in Supabase
         try:
-            supabase.update("campaigns", {"id": campaign_id}, {"total_leads": total_enqueued})
+            camp_now = database.get_campaign(campaign_id)
+            total = camp_now.get("total_leads", 0) if camp_now else len(eligible_leads)
+            supabase.update("campaigns", {"id": campaign_id}, {"total_leads": total})
         except Exception:
             pass
 
-        return total_enqueued
+        return summary
 
 contacts_service = ContactsService()

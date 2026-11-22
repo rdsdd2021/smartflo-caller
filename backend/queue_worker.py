@@ -227,6 +227,7 @@ class CampaignRunner:
                 break
 
             lead_id = None
+            phone = None
             try:
                 try:
                     lead = await asyncio.wait_for(self._queue.get(), timeout=1.0)
@@ -234,10 +235,19 @@ class CampaignRunner:
                     continue
 
                 lead_id = lead["id"]
+                phone = lead["phone_number"]
+
+                # Dial collision guard: check if another trunk channel is currently dialing this phone number
+                if phone in campaign_engine._active_dialing_phones:
+                    self._in_flight_ids.discard(lead_id)
+                    await self._queue.put(lead)
+                    await asyncio.sleep(1.0)
+                    continue
+
+                campaign_engine._active_dialing_phones.add(phone)
 
                 # Double check lead status from DB in case it was modified
                 did = self.get_next_did()
-                phone = lead["phone_number"]
                 name = lead.get("name", "")
                 call_time = database.get_now_ist_str()
 
@@ -532,12 +542,16 @@ class CampaignRunner:
                     except ValueError:
                         pass
                 await asyncio.sleep(1.0)
+            finally:
+                if phone:
+                    campaign_engine._active_dialing_phones.discard(phone)
 
 
 class MultiCampaignEngine:
     """Arbiter managing all campaign runners and splitting the 15-channel trunk."""
     def __init__(self):
         self.runners: Dict[str, CampaignRunner] = {}
+        self._active_dialing_phones: set = set()
         self._ensure_default_campaign()
 
     def _ensure_default_campaign(self):
