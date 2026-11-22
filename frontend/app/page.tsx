@@ -40,7 +40,16 @@ import {
   LogOut,
   KeyRound,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Table as TableIcon,
+  LayoutGrid,
+  ListFilter,
+  SlidersHorizontal,
+  ArrowUpDown,
+  BarChart3,
+  Activity,
+  X,
+  Check
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import UserManagementModal from "../components/UserManagementModal";
@@ -90,6 +99,12 @@ interface CampaignItem {
   answer_rate?: number;
   dtmf_leads?: number;
   dtmf_counts?: Record<string, number>;
+  dedup_intra_campaign?: number | boolean;
+  dedup_cross_active?: number | boolean;
+  enable_cooldown?: number | boolean;
+  cooldown_answered_hours?: number;
+  cooldown_missed_hours?: number;
+  exclude_dnd?: number | boolean;
   created_at: string;
   updated_at: string;
 }
@@ -192,6 +207,11 @@ export default function SmartfloDialerApp() {
   // Search & Filter for Dashboard
   const [searchQuery, setSearchQuery] = useState("");
   const [currentAppView, setCurrentAppView] = useState<"campaigns" | "crm">("campaigns");
+  const [campaignViewMode, setCampaignViewMode] = useState<"table" | "cards">("table");
+  const [campaignStatusFilter, setCampaignStatusFilter] = useState<"all" | "running" | "paused" | "idle" | "completed">("all");
+  const [campaignIvrFilter, setCampaignIvrFilter] = useState<string>("all");
+  const [campaignSortBy, setCampaignSortBy] = useState<"newest" | "name" | "leads" | "answer_rate" | "concurrency">("newest");
+  const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
 
   // Modals
   const [isNewCampaignOpen, setIsNewCampaignOpen] = useState(false);
@@ -1010,11 +1030,68 @@ export default function SmartfloDialerApp() {
     }
   };
 
-  // Filtered campaigns for dashboard
-  const filteredCampaigns = campaigns.filter(c =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.ivr_name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Distinct IVRs for filter dropdown
+  const distinctIVRs = React.useMemo(() => {
+    const set = new Set<string>();
+    campaigns.forEach(c => { if (c.ivr_name) set.add(c.ivr_name); });
+    return Array.from(set).sort();
+  }, [campaigns]);
+
+  // Campaign Status Counts for filter tabs
+  const campaignStatusCounts = React.useMemo(() => {
+    return {
+      all: campaigns.length,
+      running: campaigns.filter(c => (c.live_status || c.status) === "running").length,
+      paused: campaigns.filter(c => (c.live_status || c.status) === "paused").length,
+      idle: campaigns.filter(c => (c.live_status || c.status) === "idle").length,
+      completed: campaigns.filter(c => ["completed", "finished", "stopped"].includes(c.live_status || c.status)).length,
+    };
+  }, [campaigns]);
+
+  // Filtered & Sorted campaigns for dashboard
+  const filteredCampaigns = React.useMemo(() => {
+    return campaigns
+      .filter((camp) => {
+        const status = camp.live_status || camp.status || "idle";
+        // 1. Status Filter
+        if (campaignStatusFilter === "running" && status !== "running") return false;
+        if (campaignStatusFilter === "paused" && status !== "paused") return false;
+        if (campaignStatusFilter === "idle" && status !== "idle") return false;
+        if (campaignStatusFilter === "completed" && !["completed", "finished", "stopped"].includes(status)) return false;
+
+        // 2. IVR Filter
+        if (campaignIvrFilter !== "all" && camp.ivr_name !== campaignIvrFilter) return false;
+
+        // 3. Search Query (name, id, ivr_name)
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase().trim();
+          const matchName = (camp.name || "").toLowerCase().includes(q);
+          const matchId = (camp.id || "").toLowerCase().includes(q);
+          const matchIVR = (camp.ivr_name || "").toLowerCase().includes(q);
+          if (!matchName && !matchId && !matchIVR) return false;
+        }
+
+        return true;
+      })
+      .sort((a, b) => {
+        if (campaignSortBy === "name") {
+          return (a.name || "").localeCompare(b.name || "");
+        }
+        if (campaignSortBy === "leads") {
+          return (b.total_leads || 0) - (a.total_leads || 0);
+        }
+        if (campaignSortBy === "answer_rate") {
+          const rateA = (a.completed_leads || 0) > 0 ? (a.answered_leads || 0) / a.completed_leads : 0;
+          const rateB = (b.completed_leads || 0) > 0 ? (b.answered_leads || 0) / b.completed_leads : 0;
+          return rateB - rateA;
+        }
+        if (campaignSortBy === "concurrency") {
+          return (b.concurrency || 0) - (a.concurrency || 0);
+        }
+        // default "newest"
+        return (b.created_at || "").localeCompare(a.created_at || "");
+      });
+  }, [campaigns, campaignStatusFilter, campaignIvrFilter, searchQuery, campaignSortBy]);
 
   const baseCamp = campaigns.find(c => c.id === selectedCampaignId);
   const activeCamp = (activeCampaignDetail && activeCampaignDetail.id === selectedCampaignId)
@@ -1252,95 +1329,655 @@ export default function SmartfloDialerApp() {
           />
         ) : selectedCampaignId === null ? (
           <div className="space-y-6">
-            {/* Overview Banner */}
+            {/* ======================================================== */}
+            {/* EXECUTIVE TELECOM OPERATIONS RIBBON                      */}
+            {/* ======================================================== */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-200">
               <div>
-                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Campaigns</h1>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  Manage concurrent outbound auto-dialing campaigns on your 15-channel Smartflo trunk.
-                </p>
-              </div>
-
-              {/* Search filter */}
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search campaigns or IVRs..."
-                    className="pl-9 pr-4 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 w-64 shadow-2xs"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Stats Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                <span className="text-xs text-slate-500 font-medium">Total Campaigns</span>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{campaigns.length}</p>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                <span className="text-xs text-slate-500 font-medium">Running Now</span>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-2xl font-bold text-emerald-600">
-                    {campaigns.filter(c => (c.live_status || c.status) === "running").length}
+                <div className="flex items-center gap-3">
+                  <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Campaign Operations</h1>
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                    trunkStatus.active_channels > 0 
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+                      : "bg-slate-100 text-slate-700 border-slate-200"
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${trunkStatus.active_channels > 0 ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+                    {trunkStatus.active_channels} / 15 Channels Active
                   </span>
-                  <span className="text-xs text-slate-400">active</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Real-time orchestration &amp; telemetry for high-volume outbound campaigns on your Smartflo trunk.
+                </p>
+              </div>
+
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setNewCampConcurrency(Math.min(5, Math.max(1, trunkStatus.available_channels || 5)));
+                    setIsNewCampaignOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition-colors shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Campaign</span>
+                </button>
+              )}
+            </div>
+
+            {/* Top 4 Telecom KPI Strip */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {/* Card 1: Total Fleet */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors">
+                <span className="text-[11px] uppercase font-bold text-slate-500 tracking-wider">Fleet Scale</span>
+                <p className="text-2xl font-extrabold text-slate-900 mt-1">
+                  {campaigns.length} <span className="text-xs font-normal text-slate-500">campaigns</span>
+                </p>
+                <div className="flex items-center gap-2 mt-2 text-xs">
+                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    {campaignStatusCounts.running} running
+                  </span>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-500">{campaignStatusCounts.paused} paused</span>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-500">{campaignStatusCounts.idle} idle</span>
                 </div>
               </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                <span className="text-xs text-slate-500 font-medium">Total Leads Loaded</span>
-                <p className="text-2xl font-bold text-slate-900 mt-1">
-                  {campaigns.reduce((acc, c) => acc + (c.total_leads || 0), 0).toLocaleString()}
+
+              {/* Card 2: Trunk Saturation */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase font-bold text-slate-500 tracking-wider">Trunk Capacity</span>
+                  <span className="text-xs font-bold text-indigo-600 font-mono">{trunkStatus.active_channels}/15</span>
+                </div>
+                {/* 15-Channel Micro Visual Bar */}
+                <div className="flex items-center gap-1 mt-2.5">
+                  {Array.from({ length: 15 }).map((_, idx) => (
+                    <div
+                      key={idx}
+                      className={`h-2.5 flex-1 rounded-xs transition-colors ${
+                        idx < trunkStatus.active_channels
+                          ? "bg-emerald-500 shadow-xs"
+                          : "bg-slate-200/80"
+                      }`}
+                      title={`Channel ${idx + 1}: ${idx < trunkStatus.active_channels ? "Active in Call" : "Available"}`}
+                    />
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  <span className="font-semibold text-slate-700">{trunkStatus.available_channels}</span> channels free for immediate dialing
                 </p>
               </div>
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-                <span className="text-xs text-slate-500 font-medium">Trunk Free Capacity</span>
-                <p className="text-2xl font-bold text-indigo-600 mt-1">
-                  {trunkStatus.available_channels} <span className="text-xs font-normal text-slate-500">of 15 channels</span>
+
+              {/* Card 3: Total Queue Volume */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors">
+                <span className="text-[11px] uppercase font-bold text-slate-500 tracking-wider">Queue Volume</span>
+                <p className="text-2xl font-extrabold text-slate-900 mt-1">
+                  {campaigns.reduce((a, c) => a + (c.total_leads || 0), 0).toLocaleString()}
+                  <span className="text-xs font-normal text-slate-500 ml-1">leads</span>
                 </p>
+                <p className="text-xs text-slate-500 mt-2 truncate">
+                  <span className="font-semibold text-slate-700">
+                    {campaigns.reduce((a, c) => a + (c.completed_leads || 0), 0).toLocaleString()}
+                  </span> dialed across all campaigns
+                </p>
+              </div>
+
+              {/* Card 4: Fleet Conversion */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs hover:border-slate-300 transition-colors">
+                <span className="text-[11px] uppercase font-bold text-slate-500 tracking-wider">Fleet Answer Rate</span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <p className="text-2xl font-extrabold text-emerald-600">
+                    {(() => {
+                      const comp = campaigns.reduce((a, c) => a + (c.completed_leads || 0), 0);
+                      const ans = campaigns.reduce((a, c) => a + (c.answered_leads || 0), 0);
+                      return comp > 0 ? ((ans / comp) * 100).toFixed(1) : "0.0";
+                    })()}%
+                  </p>
+                  <span className="text-xs text-slate-500 font-medium">avg</span>
+                </div>
+                <div className="flex items-center gap-2 mt-2 text-xs text-slate-500 truncate">
+                  <span className="font-semibold text-slate-700">
+                    {campaigns.reduce((a, c) => a + (c.answered_leads || 0), 0).toLocaleString()} answered
+                  </span>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-indigo-600 font-semibold">
+                    {campaigns.reduce((a, c) => a + (c.dtmf_leads || 0), 0).toLocaleString()} DTMF
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* Campaigns Card Grid */}
-            {isCampaignsLoading ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs animate-pulse">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="h-5 bg-slate-200 rounded w-1/3"></div>
-                      <div className="h-5 bg-slate-100 rounded-full w-16"></div>
-                    </div>
-                    <div className="h-4 bg-slate-100 rounded w-1/2 mb-4"></div>
-                    <div className="h-10 bg-slate-100 rounded mb-4"></div>
-                    <div className="h-12 bg-slate-50 rounded mb-4"></div>
-                    <div className="h-8 bg-slate-200 rounded"></div>
+            {/* ======================================================== */}
+            {/* MULTI-FILTER & OPERATIONS CONTROL TOOLBAR                */}
+            {/* ======================================================== */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3.5">
+              {/* Row 1: Status Filter Tabs & View Toggle Switch */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                {/* Status Segmented Tabs */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+                  <button
+                    onClick={() => setCampaignStatusFilter("all")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
+                      campaignStatusFilter === "all"
+                        ? "bg-slate-900 text-white shadow-xs"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>All Campaigns</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      campaignStatusFilter === "all" ? "bg-slate-800 text-white" : "bg-slate-200 text-slate-700"
+                    }`}>
+                      {campaignStatusCounts.all}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setCampaignStatusFilter("running")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
+                      campaignStatusFilter === "running"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Running</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      campaignStatusFilter === "running" ? "bg-emerald-700 text-white" : "bg-emerald-100 text-emerald-800"
+                    }`}>
+                      {campaignStatusCounts.running}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setCampaignStatusFilter("paused")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
+                      campaignStatusFilter === "paused"
+                        ? "bg-amber-600 text-white shadow-xs"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>Paused</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      campaignStatusFilter === "paused" ? "bg-amber-700 text-white" : "bg-amber-100 text-amber-800"
+                    }`}>
+                      {campaignStatusCounts.paused}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setCampaignStatusFilter("idle")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
+                      campaignStatusFilter === "idle"
+                        ? "bg-slate-700 text-white shadow-xs"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>Idle</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      campaignStatusFilter === "idle" ? "bg-slate-800 text-white" : "bg-slate-200 text-slate-700"
+                    }`}>
+                      {campaignStatusCounts.idle}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setCampaignStatusFilter("completed")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
+                      campaignStatusFilter === "completed"
+                        ? "bg-blue-600 text-white shadow-xs"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>Completed</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      campaignStatusFilter === "completed" ? "bg-blue-700 text-white" : "bg-blue-100 text-blue-800"
+                    }`}>
+                      {campaignStatusCounts.completed}
+                    </span>
+                  </button>
+                </div>
+
+                {/* View Switcher (Table vs Cards) */}
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg shrink-0">
+                  <button
+                    onClick={() => setCampaignViewMode("table")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                      campaignViewMode === "table"
+                        ? "bg-white text-slate-900 shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                    title="Dense Operations Table (Best for 30+ campaigns)"
+                  >
+                    <TableIcon className="w-3.5 h-3.5" />
+                    <span>Table View</span>
+                  </button>
+                  <button
+                    onClick={() => setCampaignViewMode("cards")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                      campaignViewMode === "cards"
+                        ? "bg-white text-slate-900 shadow-xs"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                    title="Visual Card Grid"
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    <span>Card Grid</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Row 2: Search Input, IVR Filter, Sort By, and Reset */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5 flex-1">
+                  {/* Search Input */}
+                  <div className="relative min-w-[240px] flex-1 max-w-sm">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search campaign by name, ID, or IVR..."
+                      className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery("")}
+                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
+                        title="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                ))}
+
+                  {/* IVR Filter Dropdown */}
+                  <div className="relative min-w-[180px]">
+                    <select
+                      value={campaignIvrFilter}
+                      onChange={(e) => setCampaignIvrFilter(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 pl-3 pr-8 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 appearance-none cursor-pointer"
+                    >
+                      <option value="all">All Audio Flows ({distinctIVRs.length})</option>
+                      {distinctIVRs.map((ivr) => (
+                        <option key={ivr} value={ivr}>IVR: {ivr}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-3 pointer-events-none" />
+                  </div>
+
+                  {/* Sort By Dropdown */}
+                  <div className="relative min-w-[170px]">
+                    <select
+                      value={campaignSortBy}
+                      onChange={(e) => setCampaignSortBy(e.target.value as any)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 pl-3 pr-8 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 appearance-none cursor-pointer"
+                    >
+                      <option value="newest">Sort: Recently Created</option>
+                      <option value="name">Sort: Name (A to Z)</option>
+                      <option value="leads">Sort: Most Leads</option>
+                      <option value="answer_rate">Sort: Highest Answer Rate</option>
+                      <option value="concurrency">Sort: Most Channels</option>
+                    </select>
+                    <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-3 pointer-events-none" />
+                  </div>
+
+                  {/* Clear Filters Reset */}
+                  {(searchQuery || campaignStatusFilter !== "all" || campaignIvrFilter !== "all" || campaignSortBy !== "newest") && (
+                    <button
+                      onClick={() => {
+                        setSearchQuery("");
+                        setCampaignStatusFilter("all");
+                        setCampaignIvrFilter("all");
+                        setCampaignSortBy("newest");
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-600 transition-colors"
+                      title="Reset all search and filter parameters"
+                    >
+                      <X className="w-3 h-3 text-slate-400" />
+                      <span>Reset</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="text-xs text-slate-500 shrink-0 font-medium">
+                  Showing <span className="font-bold text-slate-900 font-mono">{filteredCampaigns.length}</span> of {campaigns.length} campaigns
+                </div>
+              </div>
+            </div>
+
+            {/* ======================================================== */}
+            {/* VIEW MODE A: HIGH-DENSITY OPERATIONS TABLE (BEST FOR 30+)*/}
+            {/* ======================================================== */}
+            {isCampaignsLoading ? (
+              <div className="bg-white border border-slate-200 rounded-xl p-8 text-center">
+                <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-xs font-medium text-slate-500">Loading campaign fleet metrics...</p>
               </div>
             ) : filteredCampaigns.length === 0 ? (
               <div className="bg-white border border-slate-200 border-dashed rounded-xl p-12 text-center shadow-2xs">
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400 mb-3">
-                  <Layers className="w-6 h-6" />
+                  <ListFilter className="w-6 h-6" />
                 </div>
-                <h3 className="text-sm font-semibold text-slate-900">No campaigns found</h3>
+                <h3 className="text-sm font-semibold text-slate-900">No matching campaigns found</h3>
                 <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                  Create your first outbound campaign to upload numbers, assign IVR audio, and start auto-dialing.
+                  Try adjusting your search criteria, status tabs, or IVR audio flow filter.
                 </p>
-                {isAdmin && (
+                <div className="flex justify-center gap-2 mt-4">
                   <button
-                    onClick={() => setIsNewCampaignOpen(true)}
-                    className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 shadow-xs"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setCampaignStatusFilter("all");
+                      setCampaignIvrFilter("all");
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700"
                   >
-                    <Plus className="w-4 h-4" />
-                    Create Campaign
+                    Clear All Filters
                   </button>
-                )}
+                  {isAdmin && (
+                    <button
+                      onClick={() => setIsNewCampaignOpen(true)}
+                      className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5 inline mr-1" />
+                      New Campaign
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : campaignViewMode === "table" ? (
+              <div className="bg-white border border-slate-200 rounded-xl shadow-2xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        <th className="py-3 px-4 min-w-[240px]">Campaign &amp; Telemetry</th>
+                        <th className="py-3 px-4 min-w-[130px]">Status &amp; Channels</th>
+                        <th className="py-3 px-4 min-w-[170px]">Queue Progress</th>
+                        <th className="py-3 px-4 min-w-[150px]">Answer Rate &amp; DTMF</th>
+                        <th className="py-3 px-4 min-w-[220px]">IVR &amp; Conflict Protection</th>
+                        <th className="py-3 px-4 text-right min-w-[140px]">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {filteredCampaigns.map((camp) => {
+                        const status = camp.live_status || camp.status || "idle";
+                        const total = camp.total_leads || 0;
+                        const answered = camp.answered_leads || 0;
+                        const missed = camp.missed_leads || 0;
+                        const completed = camp.completed_leads || 0;
+                        const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+                        const answerRate = completed > 0 ? ((answered / completed) * 100).toFixed(1) : "0.0";
+                        const isExpanded = expandedCampaignId === camp.id;
+
+                        return (
+                          <React.Fragment key={camp.id}>
+                            <tr className={`transition-colors group ${isExpanded ? "bg-indigo-50/20" : "hover:bg-slate-50/70"}`}>
+                              {/* Column 1: Campaign Name & Info */}
+                              <td className="py-3 px-4">
+                                <div className="flex items-start gap-2.5">
+                                  <button
+                                    onClick={() => setExpandedCampaignId(isExpanded ? null : camp.id)}
+                                    className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors mt-0.5"
+                                    title={isExpanded ? "Collapse campaign rules" : "Expand campaign rules & metrics"}
+                                  >
+                                    {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                  </button>
+
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                                        status === "running" ? "bg-emerald-500 animate-pulse" :
+                                        status === "paused" ? "bg-amber-500 animate-pulse" :
+                                        status === "finished" || status === "completed" ? "bg-blue-500" :
+                                        "bg-slate-300"
+                                      }`} />
+                                      <button
+                                        onClick={() => {
+                                          setSelectedCampaignId(camp.id);
+                                          setCampaignTab("overview");
+                                        }}
+                                        className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors truncate text-left"
+                                        title={camp.name}
+                                      >
+                                        {camp.name}
+                                      </button>
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-1 pl-4 text-[11px] text-slate-400 font-mono">
+                                      <span>{camp.id}</span>
+                                      <span>·</span>
+                                      <span className="font-sans text-slate-500">
+                                        {camp.created_at ? new Date(camp.created_at.replace(" ", "T")).toLocaleDateString() : "Active"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Column 2: Status & Channels */}
+                              <td className="py-3 px-4">
+                                <div className="space-y-1">
+                                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                                    status === "running" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                                    status === "paused" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                                    status === "finished" || status === "completed" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                                    "bg-slate-100 text-slate-700 border-slate-200"
+                                  }`}>
+                                    {status === "running" && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+                                    <span>{status.toUpperCase()}</span>
+                                  </span>
+                                  <div className="text-[11px] text-slate-500 font-mono">
+                                    <span className="font-semibold text-slate-700">{camp.concurrency}</span> channels
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Column 3: Queue Progress */}
+                              <td className="py-3 px-4">
+                                <div className="space-y-1.5 max-w-[160px]">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="font-bold text-slate-800 font-mono">{percent}%</span>
+                                    <span className="text-slate-500 font-mono">{completed.toLocaleString()}/{total.toLocaleString()}</span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-300 ${
+                                        status === "running" ? "bg-emerald-500" : "bg-indigo-600"
+                                      }`}
+                                      style={{ width: `${percent}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Column 4: Answer Rate & DTMF */}
+                              <td className="py-3 px-4">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold font-mono border ${
+                                      Number(answerRate) >= 35 ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                                      Number(answerRate) >= 15 ? "bg-blue-50 text-blue-700 border-blue-200" :
+                                      "bg-slate-100 text-slate-700 border-slate-200"
+                                    }`}>
+                                      {answerRate}%
+                                    </span>
+                                    <span className="text-slate-500 text-[11px] font-mono">
+                                      {answered} answered
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-[11px] text-indigo-700 font-medium">
+                                    <Zap className="w-3 h-3 text-indigo-500" />
+                                    <span>{camp.dtmf_leads || 0} DTMF presses</span>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Column 5: IVR Flow & Conflict Rules */}
+                              <td className="py-3 px-4">
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center gap-1.5 font-medium text-slate-800 truncate max-w-[200px]" title={camp.ivr_name}>
+                                    <Volume2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                    <span className="truncate">{camp.ivr_name}</span>
+                                  </div>
+
+                                  {/* Conflict Protection Badges */}
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {camp.dedup_intra_campaign !== 0 && (
+                                      <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200" title="Intra-campaign lead deduplication active">
+                                        Intra-Dedup
+                                      </span>
+                                    )}
+                                    {camp.dedup_cross_active !== 0 && (
+                                      <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title="Cross-campaign active collision guard active">
+                                        Collision Guard
+                                      </span>
+                                    )}
+                                    {camp.enable_cooldown !== 0 && (
+                                      <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-purple-50 text-purple-700 border border-purple-200" title="Outcome-aware cooldown active (24h answered / 2h missed)">
+                                        Cooldown {camp.cooldown_answered_hours ?? 24}h
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Column 6: Inline Control Actions */}
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {status !== "running" ? (
+                                    <button
+                                      onClick={() => handleCampaignControl(camp.id, status === "paused" ? "resume" : "start")}
+                                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-emerald-50 text-emerald-600 transition-colors"
+                                      title="Start / Resume calling"
+                                    >
+                                      <Play className="w-3.5 h-3.5 fill-emerald-600" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleCampaignControl(camp.id, "pause")}
+                                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-amber-50 text-amber-600 transition-colors"
+                                      title="Pause calling"
+                                    >
+                                      <Pause className="w-3.5 h-3.5 fill-amber-600" />
+                                    </button>
+                                  )}
+
+                                  <button
+                                    onClick={() => {
+                                      setSelectedCampaignId(camp.id);
+                                      setCampaignTab("overview");
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-xs transition-colors"
+                                    title="Open campaign workspace"
+                                  >
+                                    <span>Open</span>
+                                    <ChevronRight className="w-3 h-3" />
+                                  </button>
+
+                                  {isSuperadmin && (
+                                    <button
+                                      onClick={() => handleDeleteCampaign(camp.id)}
+                                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors"
+                                      title="Delete Campaign (Superadmin only)"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+
+                            {/* Expandable Row Drawer */}
+                            {isExpanded && (
+                              <tr className="bg-slate-50/70 border-b border-slate-200">
+                                <td colSpan={6} className="p-4 pl-12">
+                                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-4">
+                                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                                      <div className="flex items-center gap-2">
+                                        <Shield className="w-4 h-4 text-indigo-600" />
+                                        <h4 className="font-bold text-xs text-slate-900">Campaign Policy &amp; Metrics Breakdown</h4>
+                                      </div>
+                                      <span className="text-[11px] text-slate-400 font-mono">DID: {camp.did_mode === "single" ? `+${camp.single_did}` : "Round-Robin across 44 DIDs"}</span>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                                      <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                                        <span className="text-[10px] uppercase font-bold text-slate-500">Intra-Campaign Dedup</span>
+                                        <p className="font-semibold text-slate-800 mt-0.5">
+                                          {camp.dedup_intra_campaign !== 0 ? "✓ Enabled (Excludes duplicates)" : "Disabled"}
+                                        </p>
+                                      </div>
+
+                                      <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                                        <span className="text-[10px] uppercase font-bold text-slate-500">Cross-Active Collision</span>
+                                        <p className="font-semibold text-slate-800 mt-0.5">
+                                          {camp.dedup_cross_active !== 0 ? "✓ Enabled (Guards concurrent dials)" : "Disabled"}
+                                        </p>
+                                      </div>
+
+                                      <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                                        <span className="text-[10px] uppercase font-bold text-slate-500">Outcome Cooldown</span>
+                                        <p className="font-semibold text-slate-800 mt-0.5">
+                                          {camp.enable_cooldown !== 0 
+                                            ? `✓ ${camp.cooldown_answered_hours ?? 24}h Answered / ${camp.cooldown_missed_hours ?? 2}h Missed`
+                                            : "Disabled"}
+                                        </p>
+                                      </div>
+
+                                      <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                                        <span className="text-[10px] uppercase font-bold text-slate-500">DND / Opt-Out Exclusion</span>
+                                        <p className="font-semibold text-slate-800 mt-0.5">
+                                          {camp.exclude_dnd !== 0 ? "✓ Enabled (Auto-skips CRM DND)" : "Disabled"}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    {/* Direct Quick Shortcuts */}
+                                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                                      <div className="flex items-center gap-2 text-slate-500">
+                                        <span>Pacing Delay: <strong className="text-slate-800 font-mono">{camp.inter_call_delay ?? 3}s</strong></span>
+                                        <span>·</span>
+                                        <span>Unanswered/Missed: <strong className="text-rose-600 font-mono">{missed}</strong></span>
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={() => {
+                                            setSelectedCampaignId(camp.id);
+                                            setCampaignTab("leads");
+                                          }}
+                                          className="px-3 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs"
+                                        >
+                                          View Leads Queue
+                                        </button>
+
+                                        <button
+                                          onClick={() => {
+                                            setSelectedCampaignId(camp.id);
+                                            setCampaignTab("overview");
+                                          }}
+                                          className="px-3.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-xs"
+                                        >
+                                          Enter Workspace →
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : (
+              /* ======================================================== */
+              /* VIEW MODE B: VISUAL CARDS GRID                           */
+              /* ======================================================== */
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                 {filteredCampaigns.map((camp) => {
                   const status = camp.live_status || camp.status || "idle";
@@ -1349,6 +1986,7 @@ export default function SmartfloDialerApp() {
                   const missed = camp.missed_leads || 0;
                   const completed = camp.completed_leads || 0;
                   const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+                  const answerRate = completed > 0 ? ((answered / completed) * 100).toFixed(1) : "0.0";
 
                   return (
                     <div
@@ -1358,46 +1996,54 @@ export default function SmartfloDialerApp() {
                       <div>
                         {/* Card Header */}
                         <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h3 className="font-semibold text-base text-slate-900 tracking-tight leading-snug">
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-semibold text-base text-slate-900 tracking-tight leading-snug truncate" title={camp.name}>
                               {camp.name}
                             </h3>
-                            <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
-                              <Volume2 className="w-3.5 h-3.5 text-indigo-500" />
-                              <span className="font-medium text-slate-700">{camp.ivr_name}</span>
+                            <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500 truncate">
+                              <Volume2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                              <span className="font-medium text-slate-700 truncate">{camp.ivr_name}</span>
                             </div>
                           </div>
 
                           {/* Status Badge */}
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border shrink-0 ${
                             status === "running" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
                             status === "paused" ? "bg-amber-50 text-amber-700 border-amber-200" :
-                            status === "finished" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                            status === "finished" || status === "completed" ? "bg-blue-50 text-blue-700 border-blue-200" :
                             "bg-slate-100 text-slate-700 border-slate-200"
                           }`}>
-                            {status.toUpperCase()}
+                            {status === "running" && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+                            <span>{status.toUpperCase()}</span>
                           </span>
                         </div>
 
-                        {/* Specs Pill */}
-                        <div className="flex items-center gap-2 mt-4 text-[11px] text-slate-500">
+                        {/* Specs & Conflict Pills */}
+                        <div className="flex flex-wrap items-center gap-1.5 mt-3 text-[11px] text-slate-500">
                           <span className="bg-slate-100 px-2 py-0.5 rounded font-mono font-medium text-slate-700">
-                            {camp.concurrency} Trunk Channels
+                            {camp.concurrency} Channels
                           </span>
                           <span className="bg-slate-100 px-2 py-0.5 rounded font-mono font-medium text-slate-700">
-                            {camp.did_mode === "single" ? `DID: ...${(camp.single_did || "").slice(-4)}` : "44 DIDs Rotation"}
+                            {camp.did_mode === "single" ? `DID: ...${(camp.single_did || "").slice(-4)}` : "44 DIDs"}
                           </span>
+                          {camp.enable_cooldown !== 0 && (
+                            <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded font-medium text-[10px]">
+                              Cooldown {camp.cooldown_answered_hours ?? 24}h
+                            </span>
+                          )}
                         </div>
 
                         {/* Progress Bar */}
                         <div className="mt-4">
                           <div className="flex justify-between text-xs text-slate-500 mb-1">
-                            <span>Progress</span>
+                            <span>Queue Progress</span>
                             <span className="font-medium text-slate-700">{percent}% ({completed}/{total})</span>
                           </div>
                           <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-indigo-600 rounded-full transition-all duration-500"
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                status === "running" ? "bg-emerald-500" : "bg-indigo-600"
+                              }`}
                               style={{ width: `${percent}%` }}
                             />
                           </div>
@@ -1410,16 +2056,16 @@ export default function SmartfloDialerApp() {
                             <span className="font-semibold text-emerald-600">{answered}</span>
                           </div>
                           <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">ANSWER RATE</span>
+                            <span className="font-semibold text-slate-800">{answerRate}%</span>
+                          </div>
+                          <div>
                             <span className="text-[10px] text-slate-400 block font-medium">DTMF</span>
                             <span className="font-semibold text-indigo-600">{camp.dtmf_leads || 0}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-400 block font-medium">MISSED</span>
                             <span className="font-semibold text-rose-500">{missed}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] text-slate-400 block font-medium">REMAINING</span>
-                            <span className="font-semibold text-slate-700">{Math.max(0, total - completed)}</span>
                           </div>
                         </div>
                       </div>
