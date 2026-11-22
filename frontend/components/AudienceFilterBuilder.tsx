@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Plus,
   Trash2,
@@ -16,7 +16,9 @@ import {
   Type,
   Check,
   ChevronDown,
-  AlertCircle
+  AlertCircle,
+  Search,
+  X
 } from "lucide-react";
 
 export interface FilterRule {
@@ -54,12 +56,218 @@ interface AudienceFilterBuilderProps {
   onFilterChange: (rules: FilterRule[], count: number) => void;
 }
 
+interface SearchableCheckboxDropdownProps {
+  options: string[];
+  selectedValues: string[];
+  onChange: (values: string[]) => void;
+  placeholder?: string;
+  allowCustom?: boolean;
+}
+
+function SearchableCheckboxDropdown({
+  options,
+  selectedValues,
+  onChange,
+  placeholder = "Select values...",
+  allowCustom = true
+}: SearchableCheckboxDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isOpen]);
+
+  const filtered = options.filter((opt) =>
+    opt.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const toggleOption = (val: string) => {
+    if (selectedValues.includes(val)) {
+      onChange(selectedValues.filter((x) => x !== val));
+    } else {
+      onChange([...selectedValues, val]);
+    }
+  };
+
+  const handleSelectAll = () => {
+    const combined = Array.from(new Set([...selectedValues, ...filtered]));
+    onChange(combined);
+  };
+
+  const handleClearAll = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    onChange([]);
+  };
+
+  const handleAddCustom = (val: string) => {
+    const trimmed = val.trim();
+    if (trimmed && !selectedValues.includes(trimmed)) {
+      onChange([...selectedValues, trimmed]);
+      setSearch("");
+    }
+  };
+
+  const isCustomMatchPossible =
+    allowCustom &&
+    search.trim() !== "" &&
+    !options.some((o) => o.toLowerCase() === search.trim().toLowerCase());
+
+  return (
+    <div className="relative flex-1 min-w-[200px]" ref={dropdownRef}>
+      {/* Trigger Button */}
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-left hover:border-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs transition-colors"
+      >
+        <div className="flex-1 truncate">
+          {selectedValues.length === 0 ? (
+            <span className="text-slate-400 font-normal">{placeholder}</span>
+          ) : selectedValues.length <= 2 ? (
+            <span className="font-semibold text-slate-800">
+              {selectedValues.join(", ")}
+            </span>
+          ) : (
+            <span className="font-semibold text-slate-800">
+              {selectedValues.slice(0, 2).join(", ")}{" "}
+              <span className="inline-block bg-indigo-50 text-indigo-700 px-1.5 py-0.2 rounded font-bold text-[10px]">
+                +{selectedValues.length - 2} more
+              </span>
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {selectedValues.length > 0 && (
+            <span
+              onClick={handleClearAll}
+              className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded"
+              title="Clear selection"
+            >
+              <X className="w-3 h-3" />
+            </span>
+          )}
+          <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+        </div>
+      </button>
+
+      {/* Dropdown Popover */}
+      {isOpen && (
+        <div className="absolute left-0 mt-1.5 w-72 max-w-[90vw] bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2.5 space-y-2 animate-in fade-in zoom-in-95 duration-100">
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+            <input
+              type="text"
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search or type custom..."
+              className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:bg-white focus:border-indigo-500"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="absolute right-2 top-2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {/* Quick Action Bar */}
+          <div className="flex items-center justify-between text-[11px] px-1 text-slate-500 pt-0.5 border-b border-slate-100 pb-1.5">
+            <span>
+              <strong className="text-slate-700">{selectedValues.length}</strong> selected
+            </span>
+            <div className="flex items-center gap-2">
+              {filtered.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleSelectAll}
+                  className="font-semibold text-indigo-600 hover:text-indigo-800"
+                >
+                  Select All
+                </button>
+              )}
+              {selectedValues.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onChange([])}
+                  className="font-semibold text-rose-600 hover:text-rose-800"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Scrollable Checkbox Options List */}
+          <div className="max-h-52 overflow-y-auto space-y-0.5 pr-0.5">
+            {isCustomMatchPossible && (
+              <button
+                type="button"
+                onClick={() => handleAddCustom(search)}
+                className="w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-xs font-semibold text-indigo-700 transition-colors mb-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add &quot;{search.trim()}&quot;</span>
+              </button>
+            )}
+
+            {filtered.length === 0 && !isCustomMatchPossible ? (
+              <div className="text-center py-4 text-xs text-slate-400">
+                No matching values found
+              </div>
+            ) : (
+              filtered.map((opt) => {
+                const isSelected = selectedValues.includes(opt);
+                return (
+                  <label
+                    key={opt}
+                    className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer select-none transition-colors ${
+                      isSelected
+                        ? "bg-indigo-50/70 text-indigo-950 font-semibold"
+                        : "hover:bg-slate-50 text-slate-700 font-medium"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleOption(opt)}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                    />
+                    <span className="flex-1 truncate">{opt}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const getOperatorsForType = (type: string) => {
   switch (type) {
     case "number":
       return [
+        { label: "is any of (checkboxes)", value: "in" },
         { label: "equals (=)", value: "equals" },
-        { label: "does not equal (≠)", value: "not_equals" },
+        { label: "not equals (≠)", value: "not_equals" },
         { label: "greater than (>)", value: "greater_than" },
         { label: "less than (<)", value: "less_than" },
         { label: "at least (>=)", value: "greater_than_or_equal" },
@@ -69,9 +277,9 @@ const getOperatorsForType = (type: string) => {
       ];
     case "select":
       return [
-        { label: "is", value: "equals" },
+        { label: "is any of (checkboxes)", value: "in" },
+        { label: "is exactly", value: "equals" },
         { label: "is not", value: "not_equals" },
-        { label: "is any of (multi-select)", value: "in" },
         { label: "is empty / not set", value: "is_empty" },
         { label: "is set / has value", value: "is_not_empty" }
       ];
@@ -86,12 +294,12 @@ const getOperatorsForType = (type: string) => {
     case "text":
     default:
       return [
+        { label: "is any of (checkboxes)", value: "in" },
         { label: "equals exactly", value: "equals" },
         { label: "does not equal", value: "not_equals" },
         { label: "contains text", value: "contains" },
         { label: "starts with", value: "starts_with" },
         { label: "ends with", value: "ends_with" },
-        { label: "is any of", value: "in" },
         { label: "is empty / not set", value: "is_empty" },
         { label: "is set / has value", value: "is_not_empty" }
       ];
@@ -122,7 +330,7 @@ export default function AudienceFilterBuilder({
       if (res.ok) {
         const data = await res.json();
         const loaded: ContactFilterField[] = data.fields || [];
-        setFields(loaded.filter(f => f.is_filter_enabled !== false));
+        setFields(loaded.filter((f) => f.is_filter_enabled !== false));
       }
     } catch (e) {
       console.error("Error fetching dynamic fields:", e);
@@ -131,27 +339,28 @@ export default function AudienceFilterBuilder({
 
   const fetchFieldValues = async (fieldKey: string) => {
     if (fieldValuesCache[fieldKey] || loadingFieldValues[fieldKey]) return;
-    setLoadingFieldValues(prev => ({ ...prev, [fieldKey]: true }));
+    setLoadingFieldValues((prev) => ({ ...prev, [fieldKey]: true }));
     try {
       const res = await fetch(`${apiBase}/contacts/field-values?field=${encodeURIComponent(fieldKey)}`);
       if (res.ok) {
         const data = await res.json();
-        setFieldValuesCache(prev => ({ ...prev, [fieldKey]: data.values || [] }));
+        setFieldValuesCache((prev) => ({ ...prev, [fieldKey]: data.values || [] }));
       }
     } catch {} finally {
-      setLoadingFieldValues(prev => ({ ...prev, [fieldKey]: false }));
+      setLoadingFieldValues((prev) => ({ ...prev, [fieldKey]: false }));
     }
   };
 
   const handleAddRule = () => {
     const defaultField = fields[0]?.field_key || "last_call_status";
-    const fieldMeta = fields.find(f => f.field_key === defaultField);
-    const defaultOp = fieldMeta?.field_type === "number" ? "greater_than_or_equal" : "equals";
-    
+    const fieldMeta = fields.find((f) => f.field_key === defaultField);
+    const validOps = getOperatorsForType(fieldMeta?.field_type || "text");
+
     const newRule: FilterRule = {
       field: defaultField,
-      operator: defaultOp as any,
-      value: ""
+      operator: validOps[0].value as any,
+      value: "",
+      values: []
     };
     const updated = [...rules, newRule];
     setRules(updated);
@@ -170,7 +379,7 @@ export default function AudienceFilterBuilder({
     updated[index] = { ...updated[index], [key]: val };
 
     if (key === "field") {
-      const newFieldMeta = fields.find(f => f.field_key === val);
+      const newFieldMeta = fields.find((f) => f.field_key === val);
       const validOps = getOperatorsForType(newFieldMeta?.field_type || "text");
       updated[index].operator = validOps[0].value as any;
       updated[index].value = "";
@@ -186,11 +395,10 @@ export default function AudienceFilterBuilder({
     setIsCounting(true);
     setCountError(null);
     try {
-      // Valid rules are those that either don't require value (is_empty/is_not_empty) or have a value
       const activeRules = rules.filter((r) => {
         if (!r.field) return false;
         if (r.operator === "is_empty" || r.operator === "is_not_empty") return true;
-        if (r.operator === "in") return (r.values && r.values.length > 0);
+        if (r.operator === "in") return r.values && r.values.length > 0;
         return Boolean(r.value && r.value.trim() !== "");
       });
 
@@ -215,7 +423,7 @@ export default function AudienceFilterBuilder({
   };
 
   // Group fields by category dynamically
-  const categories = Array.from(new Set(fields.map(f => f.category || "Custom Datapoints")));
+  const categories = Array.from(new Set(fields.map((f) => f.category || "Custom Datapoints")));
 
   return (
     <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-4 space-y-4">
@@ -231,7 +439,7 @@ export default function AudienceFilterBuilder({
             </h4>
           </div>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Target specific leads from your master database by filtering on any contact attribute, telecom outcome, or DTMF press.
+            Filter contacts with searchable checkbox dropdowns across call status, DTMF response, and all custom lead data.
           </p>
         </div>
 
@@ -252,11 +460,13 @@ export default function AudienceFilterBuilder({
 
       {/* Matching Count Result Banner */}
       {matchingCount !== null && (
-        <div className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs transition-all ${
-          matchingCount > 0 
-            ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
-            : "bg-amber-50 border-amber-200 text-amber-800"
-        }`}>
+        <div
+          className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs transition-all ${
+            matchingCount > 0
+              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+        >
           <div className="flex items-center gap-2">
             {matchingCount > 0 ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -264,12 +474,17 @@ export default function AudienceFilterBuilder({
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
             )}
             <span>
-              <strong>{matchingCount.toLocaleString()}</strong> {matchingCount === 1 ? "contact matches" : "contacts match"} these filter criteria.
+              <strong>{matchingCount.toLocaleString()}</strong>{" "}
+              {matchingCount === 1 ? "contact matches" : "contacts match"} these filter criteria.
             </span>
           </div>
-          <span className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
-            matchingCount > 0 ? "text-emerald-700 bg-emerald-100/70" : "text-amber-700 bg-amber-100/70"
-          }`}>
+          <span
+            className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
+              matchingCount > 0
+                ? "text-emerald-700 bg-emerald-100/70"
+                : "text-amber-700 bg-amber-100/70"
+            }`}
+          >
             {matchingCount > 0 ? "Ready to Queue" : "No Leads Match"}
           </span>
         </div>
@@ -289,7 +504,7 @@ export default function AudienceFilterBuilder({
             <Users className="w-7 h-7 text-slate-300 mx-auto mb-1.5" />
             <p className="text-xs text-slate-600 font-semibold">No filter conditions applied</p>
             <p className="text-[11px] text-slate-400 mt-0.5 max-w-sm mx-auto">
-              Leave empty to queue all contacts in the database, or add conditions below to target by any linked data point.
+              Leave empty to queue all contacts, or click below to target leads with searchable checkbox filters.
             </p>
             <button
               type="button"
@@ -312,7 +527,9 @@ export default function AudienceFilterBuilder({
             const allAvailableValues = Array.from(new Set([...configuredOptions, ...cachedValues])).filter(Boolean);
 
             const isNullCheck = rule.operator === "is_empty" || rule.operator === "is_not_empty";
-            const isMultiValue = rule.operator === "in";
+            const isNumericComparison = ["greater_than", "less_than", "greater_than_or_equal", "less_than_or_equal"].includes(rule.operator);
+            const isDateComparison = fieldType === "date" && ["equals", "greater_than", "less_than"].includes(rule.operator);
+            const isTextSubstring = ["contains", "starts_with", "ends_with"].includes(rule.operator);
 
             return (
               <div
@@ -354,69 +571,63 @@ export default function AudienceFilterBuilder({
                     ))}
                   </select>
 
-                  {/* Value Input */}
+                  {/* Dynamic Value Input or Searchable Checkbox Dropdown */}
                   {isNullCheck ? (
                     <div className="flex-1 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 text-[11px] text-slate-500 italic">
                       No value required ({rule.operator === "is_empty" ? "matches empty / null records" : "matches non-empty records"})
                     </div>
-                  ) : isMultiValue ? (
-                    <div className="flex-1 flex flex-wrap gap-1 items-center bg-slate-50 border border-slate-200 rounded-lg p-1.5 min-h-[34px]">
-                      {allAvailableValues.length > 0 ? (
-                        allAvailableValues.map((opt) => {
-                          const selected = (rule.values || []).includes(opt);
-                          return (
-                            <button
-                              key={opt}
-                              type="button"
-                              onClick={() => {
-                                const cur = rule.values || [];
-                                const next = selected ? cur.filter((x) => x !== opt) : [...cur, opt];
-                                handleRuleChange(idx, "values", next);
-                              }}
-                              className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
-                                selected
-                                  ? "bg-indigo-600 text-white shadow-2xs"
-                                  : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100"
-                              }`}
-                            >
-                              {selected && <Check className="w-2.5 h-2.5 inline mr-1" />}
-                              {opt}
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <input
-                          type="text"
-                          placeholder="Type values comma-separated (e.g. Science, Arts)..."
-                          value={(rule.values || []).join(", ")}
-                          onChange={(e) => {
-                            const raw = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
-                            handleRuleChange(idx, "values", raw);
-                          }}
-                          className="flex-1 text-xs px-2 py-1 bg-white border border-slate-200 rounded focus:outline-none"
-                        />
-                      )}
-                    </div>
-                  ) : allAvailableValues.length > 0 && fieldType === "select" ? (
-                    <select
-                      value={rule.value}
-                      onChange={(e) => handleRuleChange(idx, "value", e.target.value)}
-                      className="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="">Select option...</option>
-                      {allAvailableValues.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
+                  ) : isNumericComparison ? (
                     <input
-                      type={fieldType === "number" ? "number" : fieldType === "date" ? "date" : "text"}
+                      type="number"
                       value={rule.value}
                       onChange={(e) => handleRuleChange(idx, "value", e.target.value)}
-                      placeholder={`Enter ${currentFieldMeta?.label || "value"}...`}
+                      placeholder={`Enter number (e.g. 10)...`}
                       className="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                    />
+                  ) : isDateComparison ? (
+                    <input
+                      type="date"
+                      value={rule.value}
+                      onChange={(e) => handleRuleChange(idx, "value", e.target.value)}
+                      className="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                    />
+                  ) : isTextSubstring ? (
+                    <input
+                      type="text"
+                      value={rule.value}
+                      onChange={(e) => handleRuleChange(idx, "value", e.target.value)}
+                      placeholder={`Text to match for ${currentFieldMeta?.label || "field"}...`}
+                      className="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                    />
+                  ) : (
+                    /* Default for "in", "equals", "not_equals": Searchable Checkbox Dropdown */
+                    <SearchableCheckboxDropdown
+                      options={allAvailableValues}
+                      selectedValues={
+                        rule.operator === "in" && rule.values && rule.values.length > 0
+                          ? rule.values
+                          : rule.value
+                          ? [rule.value]
+                          : []
+                      }
+                      onChange={(selected) => {
+                        const updated = [...rules];
+                        if (selected.length > 1) {
+                          updated[idx].operator = "in";
+                          updated[idx].values = selected;
+                          updated[idx].value = selected[0] || "";
+                        } else if (selected.length === 1) {
+                          updated[idx].values = selected;
+                          updated[idx].value = selected[0];
+                        } else {
+                          updated[idx].values = [];
+                          updated[idx].value = "";
+                        }
+                        setRules(updated);
+                        setMatchingCount(null);
+                      }}
+                      placeholder={`Search & select ${currentFieldMeta?.label || "options"}...`}
+                      allowCustom={true}
                     />
                   )}
 
@@ -430,32 +641,6 @@ export default function AudienceFilterBuilder({
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-
-                {/* Suggestions Pills Bar (Quick Fill) */}
-                {!isNullCheck && !isMultiValue && allAvailableValues.length > 0 && (
-                  <div className="flex items-center gap-1.5 overflow-x-auto pt-1 pl-1 text-[11px] text-slate-400">
-                    <span className="shrink-0 text-[10px] font-medium text-slate-400">Suggestions:</span>
-                    <div className="flex items-center gap-1 flex-wrap">
-                      {allAvailableValues.slice(0, 8).map((val) => (
-                        <button
-                          key={val}
-                          type="button"
-                          onClick={() => handleRuleChange(idx, "value", val)}
-                          className={`px-1.5 py-0.5 rounded text-[10px] transition-colors ${
-                            rule.value === val
-                              ? "bg-indigo-100 text-indigo-700 font-bold border border-indigo-200"
-                              : "bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200"
-                          }`}
-                        >
-                          {val}
-                        </button>
-                      ))}
-                      {allAvailableValues.length > 8 && (
-                        <span className="text-[10px] text-slate-400">+{allAvailableValues.length - 8} more</span>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })

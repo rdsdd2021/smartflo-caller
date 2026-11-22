@@ -251,8 +251,10 @@ class ContactsService:
                     continue
 
             # 3. MULTI-VALUE 'IN'
-            if op in ["in", "any_of"] and vals:
-                clean_vals = [str(v).strip() for v in vals if str(v).strip()]
+            if op in ["in", "any_of"]:
+                clean_vals = [str(v).strip() for v in (vals or []) if str(v).strip()]
+                if not clean_vals and val:
+                    clean_vals = [str(val).strip()]
                 if clean_vals:
                     val_str = ",".join(clean_vals)
                     params[param_key] = f"in.({val_str})"
