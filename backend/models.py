@@ -195,3 +195,27 @@ class UpdateSettingsRequest(BaseModel):
     smartflo_api_key: Optional[str] = None
     caller_id: Optional[str] = None
     inter_call_delay: Optional[int] = None
+
+
+# -------------------------------------------------------------
+# AUTH & USER MANAGEMENT MODELS
+# -------------------------------------------------------------
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: str = "agent"
+
+class UpdateUserRequest(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str

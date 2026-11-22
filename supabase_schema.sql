@@ -166,3 +166,24 @@ CREATE POLICY "Allow all on campaign_leads" ON campaign_leads FOR ALL USING (tru
 ALTER TABLE call_logs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow all on call_logs" ON call_logs;
 CREATE POLICY "Allow all on call_logs" ON call_logs FOR ALL USING (true) WITH CHECK (true);
+
+
+-- 8. Users & Role-Based Access Control (RBAC)
+CREATE TABLE IF NOT EXISTS app_users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'agent', -- 'superadmin', 'admin', 'agent'
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    last_login_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email);
+CREATE INDEX IF NOT EXISTS idx_app_users_role ON app_users(role);
+
+ALTER TABLE app_users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all on app_users" ON app_users;
+CREATE POLICY "Allow all on app_users" ON app_users FOR ALL USING (true) WITH CHECK (true);

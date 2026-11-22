@@ -1,6 +1,7 @@
 import io
-from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Response, Request, WebSocket, WebSocketDisconnect
+from typing import List, Optional, Dict, Any
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Response, Request, WebSocket, WebSocketDisconnect, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, PlainTextResponse
 from config import config
@@ -24,8 +25,13 @@ from models import (
     CheckCountRequest,
     CreateFieldMetaRequest,
     UpdateFieldMetaRequest,
-    UpdateContactRequest
+    UpdateContactRequest,
+    LoginRequest,
+    CreateUserRequest,
+    UpdateUserRequest,
+    ChangePasswordRequest
 )
+from auth_service import auth_service, create_access_token, decode_access_token
 from contacts_service import contacts_service
 from queue_worker import campaign_engine, TOTAL_TRUNK_CAPACITY
 from excel_service import (
@@ -55,6 +61,91 @@ def health_check():
         "dids_count": len(config.active_dids),
         "db_connected": True
     }
+
+# -------------------------------------------------------------
+# AUTH & ROLE-BASED ACCESS CONTROL (SUPERADMIN, ADMIN, AGENT)
+# -------------------------------------------------------------
+security_bearer = HTTPBearer(auto_error=False)
+
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)) -> Dict[str, Any]:
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    payload = decode_access_token(credentials.credentials)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Session expired or invalid. Please log in again.")
+    user = auth_service.get_user_by_id(payload["sub"])
+    if not user or not user.get("is_active", True):
+        raise HTTPException(status_code=401, detail="User account is deactivated or deleted.")
+    return user
+
+def require_superadmin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    if user.get("role") != "superadmin":
+        raise HTTPException(status_code=403, detail="Superadmin privilege required for this action.")
+    return user
+
+def require_admin_or_superadmin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    if user.get("role") not in ["superadmin", "admin"]:
+        raise HTTPException(status_code=403, detail="Admin privilege required for this action.")
+    return user
+
+@app.on_event("startup")
+def on_app_startup():
+    auth_service.init_default_superadmin()
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest):
+    user = auth_service.authenticate(payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = create_access_token({"sub": user["id"], "email": user["email"], "role": user["role"]})
+    return {
+        "success": True,
+        "access_token": token,
+        "token_type": "bearer",
+        "user": user
+    }
+
+@app.get("/api/auth/me")
+def get_my_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
+    return {"user": current_user}
+
+@app.put("/api/auth/me/password")
+def change_my_password(payload: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    ok, msg = auth_service.change_password(current_user["id"], payload.current_password, payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+@app.get("/api/auth/users")
+def list_users(superadmin: Dict[str, Any] = Depends(require_superadmin)):
+    return {"users": auth_service.list_users()}
+
+@app.post("/api/auth/users")
+def create_user(payload: CreateUserRequest, superadmin: Dict[str, Any] = Depends(require_superadmin)):
+    ok, msg, user = auth_service.create_user(
+        email=payload.email,
+        password=payload.password,
+        full_name=payload.full_name,
+        role=payload.role
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg, "user": user}
+
+@app.put("/api/auth/users/{user_id}")
+def update_user(user_id: str, payload: UpdateUserRequest, superadmin: Dict[str, Any] = Depends(require_superadmin)):
+    updates = payload.model_dump(exclude_unset=True)
+    ok, msg = auth_service.update_user(user_id, updates)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
+
+@app.delete("/api/auth/users/{user_id}")
+def delete_user(user_id: str, superadmin: Dict[str, Any] = Depends(require_superadmin)):
+    ok, msg = auth_service.delete_user(user_id, superadmin["id"])
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"success": True, "message": msg}
 
 # -------------------------------------------------------------
 # REAL-TIME WEBSOCKET TELEMETRY & SMARTFLO WEBHOOKS
