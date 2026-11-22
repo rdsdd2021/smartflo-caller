@@ -154,6 +154,7 @@ class CampaignSummaryResponse(BaseModel):
     total_duration: int
     avg_duration: float
     dtmf_counts: Dict[str, int]
+    dtmf_leads: Optional[int] = 0
     channel_slots: List[ChannelSlot] = []
 
 class TrunkStatusResponse(BaseModel):

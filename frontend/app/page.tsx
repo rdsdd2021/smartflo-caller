@@ -74,6 +74,8 @@ interface CampaignItem {
   failed_leads?: number;
   pending_leads?: number;
   answer_rate?: number;
+  dtmf_leads?: number;
+  dtmf_counts?: Record<string, number>;
   created_at: string;
   updated_at: string;
 }
@@ -193,6 +195,7 @@ export default function SmartfloDialerApp() {
   const [leadsTotalPages, setLeadsTotalPages] = useState(1);
   const [leadsSearch, setLeadsSearch] = useState("");
   const [leadsStatusFilter, setLeadsStatusFilter] = useState("all");
+  const [leadsDtmfFilter, setLeadsDtmfFilter] = useState("all");
   const [jumpPageInput, setJumpPageInput] = useState("");
 
   // Ingestion inside Campaign
@@ -242,13 +245,13 @@ export default function SmartfloDialerApp() {
       if (selectedCampaignIdRef.current) {
         fetchCampaignDetail(selectedCampaignIdRef.current, false);
         if (campaignTab === "leads") {
-          fetchCampaignLeads(selectedCampaignIdRef.current, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+          fetchCampaignLeads(selectedCampaignIdRef.current, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter);
         }
       }
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [campaignTab, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
+  }, [campaignTab, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter]);
 
   // 1B. Live WebSocket Telemetry Stream (Sub-second real-time push)
   useEffect(() => {
@@ -358,19 +361,22 @@ export default function SmartfloDialerApp() {
     setActiveCampaignDetail(null);
     setActiveSlots([]);
     setLeadsList([]);
+    setLeadsDtmfFilter("all");
+    setLeadsStatusFilter("all");
+    setLeadsSearch("");
     if (selectedCampaignId) {
       fetchCampaignDetail(selectedCampaignId, true);
       setLeadsPage(1);
-      fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, leadsStatusFilter, leadsSearch);
+      fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "", "all");
     }
   }, [selectedCampaignId]);
 
   // When leads pagination / filter changes
   useEffect(() => {
     if (selectedCampaignId) {
-      fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+      fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter);
     }
-  }, [leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch]);
+  }, [leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter]);
 
   // API Callers
   const fetchTrunkStatus = async () => {
@@ -420,7 +426,8 @@ export default function SmartfloDialerApp() {
     page: number,
     pageSize: number,
     status: string,
-    search: string
+    search: string,
+    dtmf: string = "all"
   ) => {
     try {
       const query = new URLSearchParams({
@@ -428,7 +435,8 @@ export default function SmartfloDialerApp() {
         page_size: String(pageSize),
         limit: String(pageSize),
         status: status,
-        search: search.trim()
+        search: search.trim(),
+        dtmf: dtmf
       });
       const res = await fetch(`${API_BASE}/campaigns/${cid}/leads?${query.toString()}`);
       if (res.ok) {
@@ -596,7 +604,7 @@ export default function SmartfloDialerApp() {
       if (res.ok && data.success) {
         showNotification(`Reset ${data.reset_count} missed calls to PENDING.`, "success");
         fetchCampaignDetail(cid, false);
-        fetchCampaignLeads(cid, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+        fetchCampaignLeads(cid, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter);
       }
     } catch {}
   };
@@ -612,7 +620,7 @@ export default function SmartfloDialerApp() {
       if (res.ok && data.success) {
         showNotification(`Removed ${phone} from leads list.`, "info");
         fetchCampaignDetail(selectedCampaignId, false);
-        fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+        fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter);
       } else {
         showNotification(data.detail || data.message || "Failed to delete lead.", "error");
       }
@@ -1075,10 +1083,14 @@ export default function SmartfloDialerApp() {
                         </div>
 
                         {/* Metrics Mini-Row */}
-                        <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-100 text-center text-xs">
+                        <div className="grid grid-cols-4 gap-1.5 mt-4 pt-3 border-t border-slate-100 text-center text-xs">
                           <div>
                             <span className="text-[10px] text-slate-400 block font-medium">ANSWERED</span>
                             <span className="font-semibold text-emerald-600">{answered}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">DTMF</span>
+                            <span className="font-semibold text-indigo-600">{camp.dtmf_leads || 0}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-400 block font-medium">MISSED</span>
@@ -1275,43 +1287,73 @@ export default function SmartfloDialerApp() {
             {campaignTab === "overview" && (
               <div className="space-y-6">
                 {/* Granular KPI Metrics */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                  <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Total Leads</span>
-                    <p className="text-xl font-bold text-slate-900 mt-1">{activeCamp?.total_leads || 0}</p>
-                    <span className="text-[10px] text-slate-400">In Campaign</span>
-                  </div>
-                  <div className="bg-white border border-emerald-100 rounded-xl p-3.5 shadow-2xs bg-emerald-50/20">
-                    <span className="text-[11px] text-emerald-700 font-medium">Answered</span>
-                    <p className="text-xl font-bold text-emerald-600 mt-1">{activeCamp?.answered_leads || 0}</p>
-                    <span className="text-[10px] text-emerald-600/80">{activeCamp?.answer_rate || 0}% Connect Rate</span>
-                  </div>
-                  <div className="bg-white border border-amber-100 rounded-xl p-3.5 shadow-2xs bg-amber-50/20">
-                    <span className="text-[11px] text-amber-700 font-medium">No Answer</span>
-                    <p className="text-xl font-bold text-amber-600 mt-1">{activeCamp?.no_answer_leads || 0}</p>
-                    <span className="text-[10px] text-amber-600/80">Rang 30s</span>
-                  </div>
-                  <div className="bg-white border border-purple-100 rounded-xl p-3.5 shadow-2xs bg-purple-50/20">
-                    <span className="text-[11px] text-purple-700 font-medium">Rejected</span>
-                    <p className="text-xl font-bold text-purple-600 mt-1">{activeCamp?.rejected_leads || 0}</p>
-                    <span className="text-[10px] text-purple-600/80">Declined</span>
-                  </div>
-                  <div className="bg-white border border-orange-100 rounded-xl p-3.5 shadow-2xs bg-orange-50/20">
-                    <span className="text-[11px] text-orange-700 font-medium">Busy</span>
-                    <p className="text-xl font-bold text-orange-600 mt-1">{activeCamp?.busy_leads || 0}</p>
-                    <span className="text-[10px] text-orange-600/80">Line Engaged</span>
-                  </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs bg-slate-50/50">
-                    <span className="text-[11px] text-slate-600 font-medium">Unreachable</span>
-                    <p className="text-xl font-bold text-slate-700 mt-1">{activeCamp?.unreachable_leads || 0}</p>
-                    <span className="text-[10px] text-slate-400">Switched Off</span>
-                  </div>
-                  <div className="bg-white border border-sky-100 rounded-xl p-3.5 shadow-2xs bg-sky-50/20">
-                    <span className="text-[11px] text-sky-700 font-medium">Quick Hangup</span>
-                    <p className="text-xl font-bold text-sky-600 mt-1">{activeCamp?.quick_hangup_leads || 0}</p>
-                    <span className="text-[10px] text-sky-600/80">&lt; 3s Call</span>
-                  </div>
-                </div>
+                {(() => {
+                  const dtmfCountsObj: Record<string, number> = activeCamp?.dtmf_counts || {};
+                  const totalDtmfCount = Object.values(dtmfCountsObj).reduce((a, b) => a + b, 0) || (activeCamp?.dtmf_leads || 0);
+                  const dtmfKeyEntries = Object.entries(dtmfCountsObj).sort((a, b) => b[1] - a[1]);
+                  const dtmfSummaryText = dtmfKeyEntries.length > 0
+                    ? dtmfKeyEntries.slice(0, 3).map(([k, v]) => `Key ${k}: ${v}`).join(", ") + (dtmfKeyEntries.length > 3 ? "..." : "")
+                    : (activeCamp?.answered_leads ? `${Math.round((totalDtmfCount / (activeCamp.answered_leads || 1)) * 100)}% of Answered` : "Key presses (0-9)");
+
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs">
+                        <span className="text-[11px] text-slate-500 font-medium">Total Leads</span>
+                        <p className="text-xl font-bold text-slate-900 mt-1">{activeCamp?.total_leads || 0}</p>
+                        <span className="text-[10px] text-slate-400">In Campaign</span>
+                      </div>
+                      <div className="bg-white border border-emerald-100 rounded-xl p-3.5 shadow-2xs bg-emerald-50/20">
+                        <span className="text-[11px] text-emerald-700 font-medium">Answered</span>
+                        <p className="text-xl font-bold text-emerald-600 mt-1">{activeCamp?.answered_leads || 0}</p>
+                        <span className="text-[10px] text-emerald-600/80">{activeCamp?.answer_rate || 0}% Connect Rate</span>
+                      </div>
+                      <div 
+                        onClick={() => {
+                          setLeadsDtmfFilter("any");
+                          setCampaignTab("leads");
+                        }}
+                        className="bg-white border border-indigo-200 rounded-xl p-3.5 shadow-2xs bg-indigo-50/30 cursor-pointer hover:border-indigo-400 hover:shadow-xs transition-all group"
+                        title="Click to view all leads with DTMF inputs in Leads tab"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] text-indigo-700 font-medium">DTMF Pressed</span>
+                          <span className="text-[9px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-semibold group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                            Filter
+                          </span>
+                        </div>
+                        <p className="text-xl font-bold text-indigo-600 mt-1">{totalDtmfCount}</p>
+                        <span className="text-[10px] text-indigo-600/80 truncate block" title={dtmfSummaryText}>
+                          {dtmfSummaryText}
+                        </span>
+                      </div>
+                      <div className="bg-white border border-amber-100 rounded-xl p-3.5 shadow-2xs bg-amber-50/20">
+                        <span className="text-[11px] text-amber-700 font-medium">No Answer</span>
+                        <p className="text-xl font-bold text-amber-600 mt-1">{activeCamp?.no_answer_leads || 0}</p>
+                        <span className="text-[10px] text-amber-600/80">Rang 30s</span>
+                      </div>
+                      <div className="bg-white border border-purple-100 rounded-xl p-3.5 shadow-2xs bg-purple-50/20">
+                        <span className="text-[11px] text-purple-700 font-medium">Rejected</span>
+                        <p className="text-xl font-bold text-purple-600 mt-1">{activeCamp?.rejected_leads || 0}</p>
+                        <span className="text-[10px] text-purple-600/80">Declined</span>
+                      </div>
+                      <div className="bg-white border border-orange-100 rounded-xl p-3.5 shadow-2xs bg-orange-50/20">
+                        <span className="text-[11px] text-orange-700 font-medium">Busy</span>
+                        <p className="text-xl font-bold text-orange-600 mt-1">{activeCamp?.busy_leads || 0}</p>
+                        <span className="text-[10px] text-orange-600/80">Line Engaged</span>
+                      </div>
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs bg-slate-50/50">
+                        <span className="text-[11px] text-slate-600 font-medium">Unreachable</span>
+                        <p className="text-xl font-bold text-slate-700 mt-1">{activeCamp?.unreachable_leads || 0}</p>
+                        <span className="text-[10px] text-slate-400">Switched Off</span>
+                      </div>
+                      <div className="bg-white border border-sky-100 rounded-xl p-3.5 shadow-2xs bg-sky-50/20">
+                        <span className="text-[11px] text-sky-700 font-medium">Quick Hangup</span>
+                        <p className="text-xl font-bold text-sky-600 mt-1">{activeCamp?.quick_hangup_leads || 0}</p>
+                        <span className="text-[10px] text-sky-600/80">&lt; 3s Call</span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Live Channels Grid for this campaign */}
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
@@ -1752,10 +1794,31 @@ export default function SmartfloDialerApp() {
                         <option value="missed">All Unanswered (Summary)</option>
                       </select>
 
+                      <select
+                        value={leadsDtmfFilter}
+                        onChange={(e) => {
+                          setLeadsDtmfFilter(e.target.value);
+                          setLeadsPage(1);
+                        }}
+                        className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium"
+                      >
+                        <option value="all">All DTMF</option>
+                        <option value="any">Any Key Pressed</option>
+                        <option value="none">No Key Pressed</option>
+                        {["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#"].map((key) => {
+                          const count = (activeCamp?.dtmf_counts || {})[key];
+                          return (
+                            <option key={key} value={key}>
+                              Key {key} {count !== undefined ? `(${count})` : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+
                       <button
                         onClick={() => {
                           if (selectedCampaignId) {
-                            fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch);
+                            fetchCampaignLeads(selectedCampaignId, leadsPage, leadsPageSize, leadsStatusFilter, leadsSearch, leadsDtmfFilter);
                             showNotification("Leads list refreshed.", "info");
                           }
                         }}

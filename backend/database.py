@@ -98,11 +98,20 @@ def init_db():
         );
         """)
 
-        # Check and migrate campaigns table for api_key
+        # Check and migrate campaigns table for api_key and dtmf_leads
         cursor.execute("PRAGMA table_info(campaigns);")
         cols = [r["name"] for r in cursor.fetchall()]
         if "api_key" not in cols:
             cursor.execute("ALTER TABLE campaigns ADD COLUMN api_key TEXT DEFAULT '865fac0f-bed8-491c-aa22-59c55c94d00c';")
+        if "dtmf_leads" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN dtmf_leads INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("""
+                UPDATE campaigns SET dtmf_leads = (
+                    SELECT COUNT(*) FROM leads 
+                    WHERE leads.campaign_id = campaigns.id 
+                    AND leads.dtmf IS NOT NULL AND leads.dtmf != '' AND leads.dtmf != 'None'
+                );
+            """)
 
         conn.commit()
 
@@ -289,14 +298,15 @@ def delete_campaign(campaign_id: str) -> bool:
     return True
 
 def sync_campaign_counters(campaign_id: str):
-    """Refreshes total, completed, answered, missed counters directly in campaigns table."""
+    """Refreshes total, completed, answered, missed, and dtmf counters directly in campaigns table."""
     with get_connection() as conn:
         row = conn.execute("""
             SELECT 
                 COUNT(*) as total,
                 SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing') THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN status IN ('completed', 'answered') THEN 1 ELSE 0 END) as answered,
-                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing', 'completed', 'answered') THEN 1 ELSE 0 END) as missed
+                SUM(CASE WHEN status NOT IN ('pending', 'dialing', 'connected', 'ringing', 'completed', 'answered') THEN 1 ELSE 0 END) as missed,
+                SUM(CASE WHEN dtmf IS NOT NULL AND dtmf != '' AND dtmf != 'None' THEN 1 ELSE 0 END) as dtmf_count
             FROM leads WHERE campaign_id = ?
         """, (campaign_id,)).fetchone()
         
@@ -304,6 +314,7 @@ def sync_campaign_counters(campaign_id: str):
         completed = row["completed"] or 0
         answered = row["answered"] or 0
         missed = row["missed"] or 0
+        dtmf_count = row["dtmf_count"] or 0
         now = get_now_ist_str()
 
         conn.execute("""
@@ -312,9 +323,10 @@ def sync_campaign_counters(campaign_id: str):
                 completed_leads = ?, 
                 answered_leads = ?, 
                 missed_leads = ?,
+                dtmf_leads = ?,
                 updated_at = ?
             WHERE id = ?
-        """, (total, completed, answered, missed, now, campaign_id))
+        """, (total, completed, answered, missed, dtmf_count, now, campaign_id))
         conn.commit()
 
 # -------------------------------------------------------------
@@ -362,7 +374,8 @@ def get_paginated_leads(
     page: int = 1, 
     limit: int = 50, 
     status_filter: Optional[str] = None, 
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    dtmf_filter: Optional[str] = None
 ) -> Dict[str, Any]:
     """High-speed paginated query with sub-millisecond index search."""
     page = max(1, page)
@@ -383,6 +396,16 @@ def get_paginated_leads(
         else:
             where_clauses.append("status = ?")
             params.append(sf)
+
+    if dtmf_filter and dtmf_filter.lower() != "all":
+        df = dtmf_filter.strip().lower()
+        if df == "any":
+            where_clauses.append("(dtmf IS NOT NULL AND dtmf != '' AND dtmf != 'None')")
+        elif df == "none":
+            where_clauses.append("(dtmf IS NULL OR dtmf = '' OR dtmf = 'None')")
+        else:
+            where_clauses.append("dtmf = ?")
+            params.append(dtmf_filter.strip())
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -482,7 +505,8 @@ def get_campaign_summary(campaign_id: str) -> Dict[str, Any]:
         "answer_rate": round((answered / completed * 100), 1) if completed > 0 else 0,
         "total_duration": total_dur,
         "avg_duration": round(total_dur / answered, 1) if answered > 0 else 0,
-        "dtmf_counts": dtmf_counts
+        "dtmf_counts": dtmf_counts,
+        "dtmf_leads": sum(dtmf_counts.values())
     }
 
 def get_next_pending_leads(campaign_id: str, limit: int = 50) -> List[Dict[str, Any]]:

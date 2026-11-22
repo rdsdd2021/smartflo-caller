@@ -165,7 +165,8 @@ def get_campaign_detail(campaign_id: str):
             "dialing_leads": summary.get("dialing_leads", 0),
             "pending_leads": summary.get("pending_leads", 0),
             "answer_rate": summary.get("answer_rate", 0),
-            "dtmf_counts": summary.get("dtmf_counts", {})
+            "dtmf_counts": summary.get("dtmf_counts", {}),
+            "dtmf_leads": summary.get("dtmf_leads", camp.get("dtmf_leads", 0))
         })
     runner = campaign_engine.get_runner(campaign_id)
     camp["live_status"] = runner.status
@@ -256,7 +257,8 @@ def get_paginated_leads(
     limit: int = Query(50, ge=1, le=200),
     page_size: Optional[int] = Query(None),
     status: Optional[str] = Query("all"),
-    search: Optional[str] = Query(None)
+    search: Optional[str] = Query(None),
+    dtmf: Optional[str] = Query("all")
 ):
     actual_limit = page_size if page_size is not None else limit
     res = database.get_paginated_leads(
@@ -264,7 +266,8 @@ def get_paginated_leads(
         page=page,
         limit=actual_limit,
         status_filter=status,
-        search=search
+        search=search,
+        dtmf_filter=dtmf
     )
     res["leads"] = res["items"]
     return res
