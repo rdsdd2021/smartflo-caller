@@ -444,13 +444,34 @@ class ContactsService:
     def populate_campaign_leads(self, campaign_id: str, filter_rules: List[Dict[str, Any]]) -> int:
         """
         Loads matching contacts from the Master Contacts directory into a campaign's run queue.
+        Populates SQLite leads table for local dialer execution AND syncs Supabase campaign_leads.
         """
+        import database
+
         params = self._build_postgrest_filters(filter_rules)
         params["select"] = "id,phone_number,name"
-        # Stream in batches of 2000
         offset = 0
         limit = 2000
         total_enqueued = 0
+
+        # Ensure campaign exists in Supabase to avoid foreign key errors
+        try:
+            camp_sqlite = database.get_campaign(campaign_id)
+            if camp_sqlite:
+                supabase.upsert("campaigns", {
+                    "id": campaign_id,
+                    "name": camp_sqlite.get("name", "Campaign"),
+                    "status": camp_sqlite.get("status", "idle"),
+                    "concurrency": camp_sqlite.get("concurrency", 5),
+                    "ivr_id": camp_sqlite.get("ivr_id", "89733"),
+                    "ivr_name": camp_sqlite.get("ivr_name", "DTMF Test IVR"),
+                    "api_key": camp_sqlite.get("api_key"),
+                    "did_mode": camp_sqlite.get("did_mode", "round_robin"),
+                    "single_did": camp_sqlite.get("single_did"),
+                    "inter_call_delay": camp_sqlite.get("inter_call_delay", 3)
+                })
+        except Exception as e:
+            print(f"[Supabase] campaign upsert notice: {e}")
 
         while True:
             params["offset"] = offset
@@ -459,26 +480,43 @@ class ContactsService:
             if not contacts:
                 break
 
-            leads_batch = []
+            sqlite_batch = []
+            supabase_batch = []
             for c in contacts:
-                leads_batch.append({
+                phone = sanitize_phone(c.get("phone_number"))
+                if not phone:
+                    continue
+                name = c.get("name") or ""
+                sqlite_batch.append((phone, name))
+                supabase_batch.append({
                     "campaign_id": campaign_id,
                     "contact_id": c["id"],
-                    "phone_number": c["phone_number"],
-                    "name": c.get("name") or "",
+                    "phone_number": phone,
+                    "name": name,
                     "status": "pending"
                 })
 
-            if leads_batch:
-                supabase.insert("campaign_leads", leads_batch)
-                total_enqueued += len(leads_batch)
+            if sqlite_batch:
+                # Insert directly into SQLite database for dialer engine and paginated leads table
+                count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+                total_enqueued += count
+
+            if supabase_batch:
+                try:
+                    supabase.insert("campaign_leads", supabase_batch)
+                except Exception as e:
+                    print(f"[Supabase] Error syncing to campaign_leads: {e}")
 
             if len(contacts) < limit:
                 break
             offset += limit
 
-        # Update campaign total leads
-        supabase.update("campaigns", {"id": campaign_id}, {"total_leads": total_enqueued})
+        # Update total_leads counter in Supabase
+        try:
+            supabase.update("campaigns", {"id": campaign_id}, {"total_leads": total_enqueued})
+        except Exception:
+            pass
+
         return total_enqueued
 
 contacts_service = ContactsService()

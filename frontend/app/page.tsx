@@ -233,7 +233,10 @@ export default function SmartfloDialerApp() {
   const [jumpPageInput, setJumpPageInput] = useState("");
 
   // Ingestion inside Campaign
-  const [ingestTab, setIngestTab] = useState<"sheets" | "file" | "text">("sheets");
+  const [ingestTab, setIngestTab] = useState<"audience" | "sheets" | "file" | "text">("audience");
+  const [campAudienceFilters, setCampAudienceFilters] = useState<FilterRule[]>([]);
+  const [campAudienceCount, setCampAudienceCount] = useState<number | null>(null);
+  const [isEnqueuingAudience, setIsEnqueuingAudience] = useState(false);
   const [sheetUrl, setSheetUrl] = useState("");
   const [sheetData, setSheetData] = useState<{
     title: string;
@@ -688,6 +691,31 @@ export default function SmartfloDialerApp() {
   };
 
   // Ingestion Handlers
+  const handleEnqueueAudienceLeads = async () => {
+    if (!selectedCampaignId) return;
+    setIsEnqueuingAudience(true);
+    try {
+      const res = await fetch(`${API_BASE}/campaigns/${selectedCampaignId}/import/audience`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filters: campAudienceFilters })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification(`Successfully queued ${data.count?.toLocaleString()} leads into this campaign!`, "success");
+        fetchCampaignsList();
+        fetchCampaignDetail(selectedCampaignId, false);
+        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "", "all");
+      } else {
+        showNotification(data.detail || "Failed to queue leads", "error");
+      }
+    } catch (err: any) {
+      showNotification(`Error: ${err?.message}`, "error");
+    } finally {
+      setIsEnqueuingAudience(false);
+    }
+  };
+
   const handleInspectSheet = async () => {
     if (!selectedCampaignId || !sheetUrl.trim()) {
       showNotification("Please provide a valid Google Sheet URL.", "error");
@@ -1805,31 +1833,73 @@ export default function SmartfloDialerApp() {
                     {/* Sub-tabs */}
                     <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
                       <button
-                        onClick={() => setIngestTab("sheets")}
-                        className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                          ingestTab === "sheets" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                        onClick={() => setIngestTab("audience")}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                          ingestTab === "audience" ? "bg-white text-indigo-700 shadow-2xs" : "text-slate-600 hover:text-slate-900"
                         }`}
                       >
-                        Google Sheets
+                        Audience Filter (CRM)
                       </button>
                       <button
                         onClick={() => setIngestTab("file")}
                         className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                          ingestTab === "file" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                          ingestTab === "file" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
                         }`}
                       >
                         CSV / Excel File
                       </button>
                       <button
+                        onClick={() => setIngestTab("sheets")}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                          ingestTab === "sheets" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Google Sheets
+                      </button>
+                      <button
                         onClick={() => setIngestTab("text")}
                         className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                          ingestTab === "text" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600"
+                          ingestTab === "text" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-600 hover:text-slate-900"
                         }`}
                       >
                         Paste Numbers
                       </button>
                     </div>
                   </div>
+
+                  {/* 0. Audience Segmentation from Contacts CRM */}
+                  {ingestTab === "audience" && (
+                    <div className="space-y-4">
+                      <AudienceFilterBuilder
+                        apiBase={API_BASE}
+                        onFilterChange={(rules, count) => {
+                          setCampAudienceFilters(rules);
+                          setCampAudienceCount(count);
+                        }}
+                      />
+                      <div className="flex justify-end pt-2">
+                        <button
+                          type="button"
+                          onClick={handleEnqueueAudienceLeads}
+                          disabled={isEnqueuingAudience}
+                          className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs disabled:opacity-50 transition-colors"
+                        >
+                          {isEnqueuingAudience ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Users className="w-4 h-4" />
+                          )}
+                          <span>
+                            {isEnqueuingAudience
+                              ? "Queueing Leads into Campaign..."
+                              : campAudienceCount !== null && campAudienceCount > 0
+                              ? `Queue ${campAudienceCount.toLocaleString()} Matching Leads`
+                              : "Queue Matching Contacts into Campaign"}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* 1. Google Sheets */}
                   {ingestTab === "sheets" && (

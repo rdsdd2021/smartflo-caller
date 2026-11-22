@@ -23,6 +23,7 @@ from models import (
     UploadAudioUrlRequest,
     AudienceFilterRule,
     CheckCountRequest,
+    ImportAudienceFilterRequest,
     CreateFieldMetaRequest,
     UpdateFieldMetaRequest,
     UpdateContactRequest,
@@ -619,6 +620,16 @@ def import_sheet(campaign_id: str, payload: GoogleSheetImportRequest):
         return {"success": True, "count": count, "imported_leads": count}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/campaigns/{campaign_id}/import-audience")
+@app.post("/api/campaigns/{campaign_id}/import/audience")
+def import_campaign_audience(campaign_id: str, payload: ImportAudienceFilterRequest):
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    rules = [f.model_dump() for f in payload.filters]
+    count = contacts_service.populate_campaign_leads(campaign_id, rules)
+    return {"success": True, "count": count, "imported_leads": count}
 
 # -------------------------------------------------------------
 # REPORTING & EXPORT WITH ADVANCED FILTERS

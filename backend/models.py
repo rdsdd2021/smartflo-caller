@@ -117,6 +117,9 @@ class AudienceFilterRule(BaseModel):
 class CheckCountRequest(BaseModel):
     filters: List[AudienceFilterRule] = []
 
+class ImportAudienceFilterRequest(BaseModel):
+    filters: List[AudienceFilterRule] = []
+
 class CreateFieldMetaRequest(BaseModel):
     label: str
     field_type: str = "text"
