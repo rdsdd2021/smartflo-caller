@@ -8,7 +8,7 @@ import httpx
 from config import config
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://quhzhzcvdkzkzlfarasg.supabase.co").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_0WqihscuPOfZ9rR7Qf0F3Q_Sbku3v7V")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1aHpoemN2ZGt6a3psZmFyYXNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUzMzQzMDEsImV4cCI6MjExMDkxMDMwMX0.Yu88Ug3ugz87O4QWznSyzsx9FmS4ZeFPJgjU9sPyr0g")
 
 class SupabaseClient:
     def __init__(self, base_url: str = SUPABASE_URL, api_key: str = SUPABASE_KEY):

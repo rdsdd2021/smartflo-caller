@@ -25,8 +25,11 @@ import {
   RefreshCw,
   Sparkles,
   Sliders,
-  Eye
+  Eye,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
+import AudienceFilterBuilder, { FilterRule } from "./AudienceFilterBuilder";
 
 interface ContactItem {
   id: string;
@@ -64,6 +67,10 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
+  // Audience Filtering State
+  const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
+  const [isFilterBuilderOpen, setIsFilterBuilderOpen] = useState(false);
+
   // Custom Datapoints Schema & Visibility
   const [fields, setFields] = useState<CustomFieldMeta[]>([]);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
@@ -96,14 +103,14 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
 
   useEffect(() => {
     fetchContacts();
-  }, [page, pageSize, search]);
+  }, [page, pageSize, search, filterRules]);
 
   const fetchFields = async () => {
     try {
       const res = await fetch(`${apiBase}/contacts/fields`);
       if (res.ok) {
         const data = await res.json();
-        const loadedFields: CustomFieldMeta[] = data.fields || [];
+        const loadedFields: CustomFieldMeta[] = data.custom_fields || (data.fields || []).filter((f: any) => !f.is_standard);
         setFields(loadedFields);
 
         // Initialize visible columns
@@ -204,6 +211,9 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
         limit: String(pageSize),
         search: search.trim()
       });
+      if (filterRules.length > 0) {
+        query.set("filters", JSON.stringify(filterRules));
+      }
       const res = await fetch(`${apiBase}/contacts?${query.toString()}`);
       if (res.ok) {
         const data = await res.json();
@@ -461,6 +471,21 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
           </div>
 
           <div className="flex items-center gap-2.5 text-xs text-slate-500">
+            {/* Audience Filters Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setIsFilterBuilderOpen(!isFilterBuilderOpen)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors shadow-2xs ${
+                filterRules.length > 0 || isFilterBuilderOpen
+                  ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                  : "bg-white border border-slate-200 hover:bg-slate-50 text-slate-700"
+              }`}
+            >
+              <Filter className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Audience Filters {filterRules.length > 0 ? `(${filterRules.length})` : ""}</span>
+              {isFilterBuilderOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
             {/* Column Visibility Selector Dropdown */}
             <div className="relative">
               <button
@@ -562,6 +587,19 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
             </button>
           </div>
         </div>
+
+        {/* Collapsible Audience Filter Builder */}
+        {isFilterBuilderOpen && (
+          <div className="pt-1 pb-1">
+            <AudienceFilterBuilder
+              apiBase={apiBase}
+              onFilterChange={(rules, count) => {
+                setFilterRules(rules);
+                setPage(1);
+              }}
+            />
+          </div>
+        )}
 
         {/* Master Contacts Table (Dynamic Headers & Columns) */}
         <div className="overflow-x-auto rounded-lg border border-slate-200">

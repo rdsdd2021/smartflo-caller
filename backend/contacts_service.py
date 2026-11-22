@@ -20,8 +20,13 @@ def sanitize_phone(phone: Any) -> str:
     return digits
 
 class ContactsService:
+    STANDARD_COLUMNS = {
+        "phone_number", "name", "last_call_status", "last_dtmf",
+        "total_calls_count", "created_at", "last_call_time"
+    }
+
     # -------------------------------------------------------------
-    # 1. CUSTOM DATAPOINT SCHEMA MANAGEMENT
+    # 1. CUSTOM DATAPOINT SCHEMA MANAGEMENT & DYNAMIC DISCOVERY
     # -------------------------------------------------------------
     def get_fields_meta(self) -> List[Dict[str, Any]]:
         """Returns all configured contact datapoint definitions."""
@@ -37,6 +42,152 @@ class ContactsService:
                 {"field_key": "marks", "label": "Marks / Percentage", "field_type": "number", "options": [], "is_filter_enabled": True}
             ]
         return res
+
+    def get_all_filter_fields(self) -> List[Dict[str, Any]]:
+        """
+        Returns EVERY filterable attribute connected to a contact:
+        1. Core contact identity (phone_number, name, created_at)
+        2. Telecom & Call history (last_call_status, last_dtmf, total_calls_count, last_call_time)
+        3. Custom Datapoints from schema (stream, community, gender, school, city, marks...)
+        4. Dynamically discovered attributes present in contacts table
+        """
+        fields: List[Dict[str, Any]] = [
+            # --- CALL ACTIVITY & TELECOM ---
+            {
+                "field_key": "last_call_status",
+                "label": "Last Call Status",
+                "category": "Call Activity & DTMF",
+                "field_type": "select",
+                "is_standard": True,
+                "options": ["answered", "missed", "no_answer", "busy", "unreachable", "failed", "pending", "never_called"]
+            },
+            {
+                "field_key": "last_dtmf",
+                "label": "Last DTMF Key Pressed",
+                "category": "Call Activity & DTMF",
+                "field_type": "select",
+                "is_standard": True,
+                "options": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "*", "#"]
+            },
+            {
+                "field_key": "total_calls_count",
+                "label": "Total Times Called",
+                "category": "Call Activity & DTMF",
+                "field_type": "number",
+                "is_standard": True,
+                "options": ["0", "1", "2", "3", "4", "5+"]
+            },
+            {
+                "field_key": "last_call_time",
+                "label": "Last Call Time",
+                "category": "Call Activity & DTMF",
+                "field_type": "date",
+                "is_standard": True,
+                "options": []
+            },
+            # --- CORE CONTACT DETAILS ---
+            {
+                "field_key": "name",
+                "label": "Contact Name",
+                "category": "Core Contact Details",
+                "field_type": "text",
+                "is_standard": True,
+                "options": []
+            },
+            {
+                "field_key": "phone_number",
+                "label": "Phone Number",
+                "category": "Core Contact Details",
+                "field_type": "text",
+                "is_standard": True,
+                "options": []
+            },
+            {
+                "field_key": "created_at",
+                "label": "Registration / Date Added",
+                "category": "Core Contact Details",
+                "field_type": "date",
+                "is_standard": True,
+                "options": []
+            }
+        ]
+
+        # --- CUSTOM DATAPOINTS FROM SCHEMA ---
+        custom_meta = self.get_fields_meta()
+        existing_keys = {f["field_key"] for f in fields}
+
+        for cm in custom_meta:
+            k = cm.get("field_key")
+            if not k or k in existing_keys:
+                continue
+            existing_keys.add(k)
+            fields.append({
+                "id": cm.get("id"),
+                "field_key": k,
+                "label": cm.get("label") or k.replace("_", " ").title(),
+                "category": "Custom Datapoints",
+                "field_type": cm.get("field_type") or "text",
+                "is_standard": False,
+                "options": cm.get("options") or [],
+                "is_filter_enabled": cm.get("is_filter_enabled", True)
+            })
+
+        # --- DYNAMICALLY DISCOVER ANY UNREGISTERED JSONB ATTRIBUTES IN CONTACTS ---
+        try:
+            sample_rows = supabase.select("contacts", {"select": "attributes", "limit": 100})
+            for r in sample_rows:
+                attrs = r.get("attributes") or {}
+                for ak in attrs.keys():
+                    if ak and ak not in existing_keys:
+                        existing_keys.add(ak)
+                        fields.append({
+                            "field_key": ak,
+                            "label": ak.replace("_", " ").title(),
+                            "category": "Custom Datapoints",
+                            "field_type": "text",
+                            "is_standard": False,
+                            "options": [],
+                            "is_filter_enabled": True
+                        })
+        except Exception:
+            pass
+
+        return fields
+
+    def get_distinct_field_values(self, field_key: str, limit: int = 50) -> List[str]:
+        """Dynamically fetches distinct existing values for any contact field or JSONB attribute."""
+        if field_key == "last_call_status":
+            return ["answered", "missed", "no_answer", "busy", "unreachable", "failed", "pending", "never_called"]
+        if field_key == "last_dtmf":
+            return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "*", "#"]
+
+        values_set = set()
+        # 1. Start with configured options if available
+        known_meta = {f["field_key"]: f for f in self.get_fields_meta()}
+        if field_key in known_meta and known_meta[field_key].get("options"):
+            for opt in known_meta[field_key]["options"]:
+                if opt:
+                    values_set.add(str(opt).strip())
+
+        # 2. Query distinct values from actual database rows
+        try:
+            if field_key in self.STANDARD_COLUMNS:
+                rows = supabase.select("contacts", {"select": field_key, "limit": 200, f"{field_key}": "not.is.null"})
+                for r in rows:
+                    v = r.get(field_key)
+                    if v is not None and str(v).strip():
+                        values_set.add(str(v).strip())
+            else:
+                rows = supabase.select("contacts", {"select": "attributes", "limit": 200})
+                for r in rows:
+                    attrs = r.get("attributes") or {}
+                    v = attrs.get(field_key)
+                    if v is not None and str(v).strip():
+                        values_set.add(str(v).strip())
+        except Exception as e:
+            print(f"[Supabase] Error fetching distinct values for {field_key}: {e}")
+
+        return sorted(list(values_set))[:limit]
 
     def create_field_meta(self, label: str, field_type: str = "text", options: Optional[List[str]] = None) -> Dict[str, Any]:
         """Creates a new custom datapoint definition."""
@@ -79,20 +230,59 @@ class ContactsService:
             if not field:
                 continue
 
-            # Standard fields vs JSONB attributes
-            param_key = field if field in ["name", "phone_number", "last_call_status"] else f"attributes->>{field}"
+            # Target standard column or JSONB attribute
+            param_key = field if field in self.STANDARD_COLUMNS else f"attributes->>{field}"
 
-            if op == "equals" and val:
-                params[param_key] = f"eq.{val}"
-            elif op == "not_equals" and val:
-                params[param_key] = f"neq.{val}"
-            elif op == "contains" and val:
-                params[param_key] = f"ilike.*{val}*"
-            elif op == "in" and vals:
-                # Comma-separated list for PostgREST
-                val_str = ",".join(str(v).strip() for v in vals if str(v).strip())
-                if val_str:
+            # 1. EMPTY / NOT EMPTY checks (no value required)
+            if op in ["is_empty", "null"]:
+                params[param_key] = "is.null"
+                continue
+            if op in ["is_not_empty", "not_null"]:
+                params[param_key] = "not.is.null"
+                continue
+
+            # 2. SPECIAL HANDLING FOR LAST CALL STATUS 'never_called'
+            if field == "last_call_status":
+                if val == "never_called":
+                    params[param_key] = "is.null"
+                    continue
+                elif op in ["not_equals", "neq"] and val == "never_called":
+                    params[param_key] = "not.is.null"
+                    continue
+
+            # 3. MULTI-VALUE 'IN'
+            if op in ["in", "any_of"] and vals:
+                clean_vals = [str(v).strip() for v in vals if str(v).strip()]
+                if clean_vals:
+                    val_str = ",".join(clean_vals)
                     params[param_key] = f"in.({val_str})"
+                continue
+
+            # For remaining operators, require a value
+            if val is None or str(val).strip() == "":
+                continue
+            val_str = str(val).strip()
+
+            # 4. COMPREHENSIVE OPERATORS
+            if op in ["equals", "eq"]:
+                params[param_key] = f"eq.{val_str}"
+            elif op in ["not_equals", "neq"]:
+                params[param_key] = f"neq.{val_str}"
+            elif op in ["contains", "ilike"]:
+                params[param_key] = f"ilike.*{val_str}*"
+            elif op in ["starts_with"]:
+                params[param_key] = f"ilike.{val_str}*"
+            elif op in ["ends_with"]:
+                params[param_key] = f"ilike.*{val_str}"
+            elif op in ["greater_than", "gt"]:
+                params[param_key] = f"gt.{val_str}"
+            elif op in ["less_than", "lt"]:
+                params[param_key] = f"lt.{val_str}"
+            elif op in ["greater_than_or_equal", "gte"]:
+                params[param_key] = f"gte.{val_str}"
+            elif op in ["less_than_or_equal", "lte"]:
+                params[param_key] = f"lte.{val_str}"
+
         return params
 
     def check_audience_count(self, filter_rules: List[Dict[str, Any]]) -> int:

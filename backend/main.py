@@ -208,7 +208,17 @@ def get_trunk_status():
 # -------------------------------------------------------------
 @app.get("/api/contacts/fields")
 def get_custom_fields():
-    return {"fields": contacts_service.get_fields_meta()}
+    return {
+        "fields": contacts_service.get_all_filter_fields(),
+        "custom_fields": contacts_service.get_fields_meta()
+    }
+
+@app.get("/api/contacts/field-values")
+def get_field_distinct_values(field: str = Query(...)):
+    return {
+        "field": field,
+        "values": contacts_service.get_distinct_field_values(field)
+    }
 
 @app.post("/api/contacts/fields")
 def create_custom_field(payload: CreateFieldMetaRequest):
@@ -240,9 +250,17 @@ def check_audience_count(payload: CheckCountRequest):
 def list_contacts(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
-    search: Optional[str] = Query(None)
+    search: Optional[str] = Query(None),
+    filters: Optional[str] = Query(None)
 ):
-    return contacts_service.get_paginated_contacts(page=page, page_size=limit, search=search)
+    filter_rules = []
+    if filters:
+        try:
+            import json
+            filter_rules = json.loads(filters)
+        except Exception:
+            pass
+    return contacts_service.get_paginated_contacts(page=page, page_size=limit, search=search, filter_rules=filter_rules)
 
 @app.get("/api/contacts/{contact_id}/timeline")
 def get_contact_timeline(contact_id: str):
