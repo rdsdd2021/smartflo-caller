@@ -10,6 +10,8 @@ services:
       - PYTHONUNBUFFERED=1
       - DATABASE_PATH=/app/data/smartflo_db.sqlite
       - EXCEL_PATH=/app/data/smartflo_dtmf_records.xlsx
+      - SUPABASE_URL=${SUPABASE_URL:-https://quhzhzcvdkzkzlfarasg.supabase.co}
+      - SUPABASE_KEY=${SUPABASE_KEY:-sb_publishable_0WqihscuPOfZ9rR7Qf0F3Q_Sbku3v7V}
     volumes:
       - smartflo_data:/app/data
     expose:
@@ -29,6 +31,8 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Kolkata
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-https://quhzhzcvdkzkzlfarasg.supabase.co}
+      - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_0WqihscuPOfZ9rR7Qf0F3Q_Sbku3v7V}
     depends_on:
       backend:
         condition: service_healthy

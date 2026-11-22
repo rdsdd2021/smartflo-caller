@@ -19,8 +19,14 @@ from models import (
     CreateIVRRequest,
     DIDSettingsRequest,
     ConcurrencyRequest,
-    UploadAudioUrlRequest
+    UploadAudioUrlRequest,
+    AudienceFilterRule,
+    CheckCountRequest,
+    CreateFieldMetaRequest,
+    UpdateFieldMetaRequest,
+    UpdateContactRequest
 )
+from contacts_service import contacts_service
 from queue_worker import campaign_engine, TOTAL_TRUNK_CAPACITY
 from excel_service import (
     export_records_to_excel_bytes,
@@ -107,6 +113,87 @@ def get_trunk_status():
     return campaign_engine.get_trunk_status()
 
 # -------------------------------------------------------------
+# CONTACTS CRM, CUSTOM FIELDS & AUDIENCE SEGMENTATION
+# -------------------------------------------------------------
+@app.get("/api/contacts/fields")
+def get_custom_fields():
+    return {"fields": contacts_service.get_fields_meta()}
+
+@app.post("/api/contacts/fields")
+def create_custom_field(payload: CreateFieldMetaRequest):
+    field = contacts_service.create_field_meta(
+        label=payload.label,
+        field_type=payload.field_type,
+        options=payload.options
+    )
+    return {"success": True, "field": field}
+
+@app.put("/api/contacts/fields/{field_id}")
+def update_custom_field(field_id: str, payload: UpdateFieldMetaRequest):
+    updates = payload.model_dump(exclude_unset=True)
+    ok = contacts_service.update_field_meta(field_id, updates)
+    return {"success": ok}
+
+@app.delete("/api/contacts/fields/{field_id}")
+def delete_custom_field(field_id: str):
+    ok = contacts_service.delete_field_meta(field_id)
+    return {"success": ok}
+
+@app.post("/api/contacts/check-count")
+def check_audience_count(payload: CheckCountRequest):
+    rules = [r.model_dump() for r in payload.filters]
+    count = contacts_service.check_audience_count(rules)
+    return {"matching_count": count, "filters": rules}
+
+@app.get("/api/contacts")
+def list_contacts(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None)
+):
+    return contacts_service.get_paginated_contacts(page=page, page_size=limit, search=search)
+
+@app.get("/api/contacts/{contact_id}/timeline")
+def get_contact_timeline(contact_id: str):
+    return contacts_service.get_contact_timeline(contact_id)
+
+@app.put("/api/contacts/{contact_id}")
+def update_contact(contact_id: str, payload: UpdateContactRequest):
+    updates = payload.model_dump(exclude_unset=True)
+    ok = contacts_service.update_contact(contact_id, updates)
+    return {"success": ok}
+
+@app.post("/api/contacts/upload")
+async def upload_contacts_file(
+    file: UploadFile = File(...),
+    mapping: Optional[str] = Form(None)
+):
+    import json
+    import csv
+    import openpyxl
+
+    content = await file.read()
+    filename = (file.filename or "").lower()
+    rows = []
+
+    if filename.endswith(".csv"):
+        text = content.decode("utf-8", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        rows = list(reader)
+    elif filename.endswith((".xlsx", ".xls")):
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        sheet = wb.active
+        headers = [str(cell.value or "").strip() for cell in sheet[1]]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if any(row):
+                row_dict = {headers[i]: row[i] for i in range(len(headers)) if i < len(row)}
+                rows.append(row_dict)
+
+    column_mapping = json.loads(mapping) if mapping else {}
+    result = contacts_service.bulk_ingest_contacts(rows, column_mapping)
+    return result
+
+# -------------------------------------------------------------
 # CAMPAIGN CRUD ENDPOINTS
 # -------------------------------------------------------------
 @app.get("/api/campaigns")
@@ -139,6 +226,15 @@ def create_new_campaign(payload: CreateCampaignRequest):
         google_sheet_phone_col=payload.google_sheet_phone_col,
         google_sheet_name_col=payload.google_sheet_name_col
     )
+    # If audience filter criteria were specified, populate campaign leads from Supabase Contacts directory
+    if payload.audience_filters:
+        rules = [f.model_dump() for f in payload.audience_filters]
+        try:
+            enqueued = contacts_service.populate_campaign_leads(camp["id"], rules)
+            camp["total_leads"] = enqueued
+        except Exception as e:
+            print(f"[Supabase] Error populating campaign from audience filters: {e}")
+
     # Register in engine
     campaign_engine.get_runner(camp["id"])
     return {"success": True, "campaign": camp}

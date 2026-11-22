@@ -108,6 +108,31 @@ class UploadAudioUrlRequest(BaseModel):
     audio_name: str
     audio_url: str
 
+class AudienceFilterRule(BaseModel):
+    field: str
+    operator: str = "equals"  # equals, not_equals, contains, in
+    value: Optional[str] = None
+    values: Optional[List[str]] = None
+
+class CheckCountRequest(BaseModel):
+    filters: List[AudienceFilterRule] = []
+
+class CreateFieldMetaRequest(BaseModel):
+    label: str
+    field_type: str = "text"
+    options: Optional[List[str]] = []
+
+class UpdateFieldMetaRequest(BaseModel):
+    label: Optional[str] = None
+    field_type: Optional[str] = None
+    options: Optional[List[str]] = None
+    is_filter_enabled: Optional[bool] = None
+
+class UpdateContactRequest(BaseModel):
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    attributes: Optional[Dict[str, Any]] = None
+
 class CreateCampaignRequest(BaseModel):
     name: str
     concurrency: int = 5
@@ -117,6 +142,7 @@ class CreateCampaignRequest(BaseModel):
     did_mode: str = "round_robin"
     single_did: Optional[str] = "917965561295"
     inter_call_delay: int = 3
+    audience_filters: Optional[List[AudienceFilterRule]] = []
     google_sheet_url: Optional[str] = None
     google_sheet_phone_col: Optional[str] = None
     google_sheet_name_col: Optional[str] = None

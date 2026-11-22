@@ -449,6 +449,34 @@ class CampaignRunner:
                     "call_time": call_time_str or call_time
                 })
 
+                # Log to Supabase call_logs for Contact Lifetime Timeline
+                try:
+                    from supabase_client import supabase
+                    supabase.insert("call_logs", {
+                        "campaign_id": self.campaign_id,
+                        "campaign_name": self.campaign_data.get("name") or "Campaign",
+                        "phone_number": phone,
+                        "caller_did": did,
+                        "status": final_status,
+                        "duration": final_duration,
+                        "dtmf": dtmf_pressed,
+                        "ivr_id": str(self.campaign_data.get("ivr_id", "")),
+                        "ivr_name": self.campaign_data.get("ivr_name", ""),
+                        "call_time": call_time_str or call_time,
+                        "recording_url": cdr_record.get("recording_url") if cdr_record else None
+                    })
+                    supabase.update(
+                        "contacts",
+                        {"phone_number": phone},
+                        {
+                            "last_call_status": final_status,
+                            "last_call_time": call_time_str or call_time,
+                            "last_dtmf": dtmf_pressed
+                        }
+                    )
+                except Exception as ex:
+                    pass
+
                 # 4. Live Write-Back to Google Sheet (if configured for this campaign)
                 sheet_url = self.campaign_data.get("google_sheet_url")
                 sheet_row = lead.get("sheet_row_index")

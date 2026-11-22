@@ -34,6 +34,9 @@ import {
   Radio,
   Users
 } from "lucide-react";
+import ContactsCRM from "../components/ContactsCRM";
+import AudienceFilterBuilder, { FilterRule } from "../components/AudienceFilterBuilder";
+import LeadTimelineDrawer from "../components/LeadTimelineDrawer";
 
 const getApiBase = () => {
   if (typeof window !== "undefined") {
@@ -161,6 +164,7 @@ export default function SmartfloDialerApp() {
 
   // Search & Filter for Dashboard
   const [searchQuery, setSearchQuery] = useState("");
+  const [currentAppView, setCurrentAppView] = useState<"campaigns" | "crm">("campaigns");
 
   // Modals
   const [isNewCampaignOpen, setIsNewCampaignOpen] = useState(false);
@@ -177,6 +181,12 @@ export default function SmartfloDialerApp() {
   const [newCampDelay, setNewCampDelay] = useState(3);
   const [newCampDidMode, setNewCampDidMode] = useState<"round_robin" | "single">("round_robin");
   const [newCampSingleDid, setNewCampSingleDid] = useState("917965561295");
+  const [newCampAudienceFilters, setNewCampAudienceFilters] = useState<FilterRule[]>([]);
+  const [newCampAudienceCount, setNewCampAudienceCount] = useState<number | null>(null);
+
+  // Lead Timeline Drawer State
+  const [selectedTimelineContact, setSelectedTimelineContact] = useState<{ id: string; phone?: string } | null>(null);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
   // Active Campaign Editable Settings
   const [editConcurrency, setEditConcurrency] = useState(5);
@@ -512,7 +522,8 @@ export default function SmartfloDialerApp() {
           api_key: newCampApiKey.trim() || "865fac0f-bed8-491c-aa22-59c55c94d00c",
           did_mode: newCampDidMode,
           single_did: newCampSingleDid,
-          inter_call_delay: newCampDelay
+          inter_call_delay: newCampDelay,
+          audience_filters: newCampAudienceFilters
         })
       });
       const data = await res.json();
@@ -520,6 +531,8 @@ export default function SmartfloDialerApp() {
         showNotification(`Campaign "${data.campaign.name}" created!`, "success");
         setIsNewCampaignOpen(false);
         setNewCampName("");
+        setNewCampAudienceFilters([]);
+        setNewCampAudienceCount(null);
         await fetchCampaignsList();
         setSelectedCampaignId(data.campaign.id);
         setCampaignTab("overview");
@@ -882,6 +895,37 @@ export default function SmartfloDialerApp() {
 
           <div className="h-5 w-px bg-slate-200 mx-2 hidden sm:block" />
 
+          {/* Navigation Views: Campaigns vs Contacts CRM */}
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200">
+            <button
+              onClick={() => {
+                setCurrentAppView("campaigns");
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+                currentAppView === "campaigns"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Campaigns</span>
+            </button>
+            <button
+              onClick={() => {
+                setCurrentAppView("crm");
+                setSelectedCampaignId(null);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+                currentAppView === "crm"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Users className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Contacts CRM</span>
+            </button>
+          </div>
+
           {/* Telemetry Badges */}
           <div className="hidden sm:flex items-center gap-3">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700">
@@ -928,10 +972,15 @@ export default function SmartfloDialerApp() {
 
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8">
-        {/* ======================================================== */}
-        {/* VIEW 1: CAMPAIGNS DASHBOARD (LIST OF CAMPAIGNS)           */}
-        {/* ======================================================== */}
-        {selectedCampaignId === null ? (
+        {currentAppView === "crm" ? (
+          <ContactsCRM
+            apiBase={API_BASE}
+            onSelectLead={(contactId, phone) => {
+              setSelectedTimelineContact({ id: contactId, phone });
+              setIsTimelineOpen(true);
+            }}
+          />
+        ) : selectedCampaignId === null ? (
           <div className="space-y-6">
             {/* Overview Banner */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-200">
@@ -1883,7 +1932,15 @@ export default function SmartfloDialerApp() {
                           </tr>
                         ) : (
                           leadsList.map((lead, idx) => (
-                            <tr key={lead.id} className="hover:bg-slate-50/80 transition-colors">
+                            <tr
+                              key={lead.id}
+                              onClick={() => {
+                                setSelectedTimelineContact({ id: lead.id, phone: lead.phone_number });
+                                setIsTimelineOpen(true);
+                              }}
+                              className="hover:bg-indigo-50/50 cursor-pointer transition-colors group"
+                              title="Click to view contact timeline & profile"
+                            >
                               <td className="py-2.5 px-3 text-slate-400 font-mono">
                                 {(leadsPage - 1) * leadsPageSize + idx + 1}
                               </td>
@@ -2137,7 +2194,7 @@ export default function SmartfloDialerApp() {
       {/* ======================================================== */}
       {isNewCampaignOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xl max-w-lg w-full space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="font-bold text-base text-slate-900">Create New Outbound Campaign</h3>
               <button
@@ -2258,6 +2315,15 @@ export default function SmartfloDialerApp() {
                   className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900"
                 />
               </div>
+
+              {/* Audience Segmentation & Live Check Count Filter Builder */}
+              <AudienceFilterBuilder
+                apiBase={API_BASE}
+                onFilterChange={(rules, count) => {
+                  setNewCampAudienceFilters(rules);
+                  setNewCampAudienceCount(count);
+                }}
+              />
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -2345,6 +2411,25 @@ export default function SmartfloDialerApp() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 3: LEAD PROFILE & LIFETIME CALL TIMELINE DRAWER     */}
+      {/* ======================================================== */}
+      {isTimelineOpen && (
+        <LeadTimelineDrawer
+          contactId={selectedTimelineContact?.id || null}
+          phoneNumber={selectedTimelineContact?.phone}
+          apiBase={API_BASE}
+          onClose={() => {
+            setIsTimelineOpen(false);
+            setSelectedTimelineContact(null);
+          }}
+          onLeadUpdated={() => {
+            fetchCampaignsList();
+            if (selectedCampaignId) fetchCampaignDetail(selectedCampaignId, false);
+          }}
+        />
       )}
     </div>
   );
