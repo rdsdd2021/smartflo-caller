@@ -398,6 +398,29 @@ class ContactsService:
 
         return supabase.update("contacts", {"id": contact_id}, payload)
 
+    def create_single_contact(self, phone_number: str, name: Optional[str] = None, attributes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Creates or updates a single contact in the contacts CRM table."""
+        clean_phone = sanitize_phone(phone_number)
+        if not clean_phone:
+            raise ValueError("Valid phone number is required")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "phone_number": clean_phone,
+            "name": name.strip() if name else None,
+            "attributes": attributes or {},
+            "total_calls_count": 0,
+            "updated_at": now_iso
+        }
+        res = supabase.upsert("contacts", [payload], on_conflict="phone_number")
+        if res and isinstance(res, list) and len(res) > 0:
+            return res[0]
+        return supabase.select_one("contacts", {"phone_number": clean_phone}) or payload
+
+    def delete_contact(self, contact_id: str) -> bool:
+        """Deletes a contact from the CRM."""
+        return supabase.delete("contacts", {"id": contact_id})
+
     # -------------------------------------------------------------
     # 4. BULK CONTACTS UPLOADER (100k - 200k SCALE)
     # -------------------------------------------------------------

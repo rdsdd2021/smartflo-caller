@@ -26,6 +26,7 @@ from models import (
     ImportAudienceFilterRequest,
     CreateFieldMetaRequest,
     UpdateFieldMetaRequest,
+    CreateContactRequest,
     UpdateContactRequest,
     LoginRequest,
     CreateUserRequest,
@@ -267,10 +268,27 @@ def list_contacts(
 def get_contact_timeline(contact_id: str):
     return contacts_service.get_contact_timeline(contact_id)
 
+@app.post("/api/contacts")
+def create_contact(payload: CreateContactRequest):
+    try:
+        contact = contacts_service.create_single_contact(
+            phone_number=payload.phone_number,
+            name=payload.name,
+            attributes=payload.attributes
+        )
+        return {"success": True, "contact": contact}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.put("/api/contacts/{contact_id}")
 def update_contact(contact_id: str, payload: UpdateContactRequest):
     updates = payload.model_dump(exclude_unset=True)
     ok = contacts_service.update_contact(contact_id, updates)
+    return {"success": ok}
+
+@app.delete("/api/contacts/{contact_id}")
+def delete_contact(contact_id: str):
+    ok = contacts_service.delete_contact(contact_id)
     return {"success": ok}
 
 @app.get("/api/contacts/sample-template")

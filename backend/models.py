@@ -147,6 +147,11 @@ class UpdateFieldMetaRequest(BaseModel):
     options: Optional[List[str]] = None
     is_filter_enabled: Optional[bool] = None
 
+class CreateContactRequest(BaseModel):
+    phone_number: str
+    name: Optional[str] = None
+    attributes: Optional[Dict[str, Any]] = None
+
 class UpdateContactRequest(BaseModel):
     name: Optional[str] = None
     phone_number: Optional[str] = None
