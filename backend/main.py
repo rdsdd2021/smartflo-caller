@@ -550,6 +550,7 @@ def list_all_campaigns():
 
 @app.post("/api/campaigns")
 def create_new_campaign(payload: CreateCampaignRequest):
+    filters_data = [f.model_dump() for f in payload.audience_filters] if payload.audience_filters else []
     camp = database.create_campaign(
         name=payload.name,
         concurrency=payload.concurrency,
@@ -559,6 +560,7 @@ def create_new_campaign(payload: CreateCampaignRequest):
         did_mode=payload.did_mode,
         single_did=payload.single_did or config.single_did,
         inter_call_delay=payload.inter_call_delay,
+        audience_filters=filters_data,
         google_sheet_url=payload.google_sheet_url,
         google_sheet_phone_col=payload.google_sheet_phone_col,
         google_sheet_name_col=payload.google_sheet_name_col,
@@ -858,6 +860,7 @@ def import_campaign_audience(campaign_id: str, payload: ImportAudienceFilterRequ
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
     rules = [f.model_dump() for f in payload.filters]
+    database.update_campaign_settings(campaign_id, {"audience_filters": rules})
     summary = contacts_service.populate_campaign_leads(
         campaign_id, rules, force_override=bool(payload.force_override)
     )

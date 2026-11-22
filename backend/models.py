@@ -187,6 +187,7 @@ class UpdateCampaignRequest(BaseModel):
     did_mode: Optional[str] = None
     single_did: Optional[str] = None
     inter_call_delay: Optional[int] = None
+    audience_filters: Optional[List[AudienceFilterRule]] = None
     google_sheet_url: Optional[str] = None
     google_sheet_phone_col: Optional[str] = None
     google_sheet_name_col: Optional[str] = None

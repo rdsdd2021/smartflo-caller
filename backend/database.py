@@ -140,6 +140,8 @@ def init_db():
             cursor.execute("ALTER TABLE campaigns ADD COLUMN cooldown_missed_hours INTEGER NOT NULL DEFAULT 2;")
         if "exclude_dnd" not in cols:
             cursor.execute("ALTER TABLE campaigns ADD COLUMN exclude_dnd INTEGER NOT NULL DEFAULT 1;")
+        if "audience_filters" not in cols:
+            cursor.execute("ALTER TABLE campaigns ADD COLUMN audience_filters TEXT DEFAULT '[]';")
 
         conn.commit()
 
@@ -262,10 +264,12 @@ def create_campaign(
     enable_cooldown: bool = True,
     cooldown_answered_hours: int = 24,
     cooldown_missed_hours: int = 2,
-    exclude_dnd: bool = True
+    exclude_dnd: bool = True,
+    audience_filters: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     cid = f"camp_{uuid.uuid4().hex[:8]}"
     now = get_now_ist_str()
+    filters_json = json.dumps(audience_filters or [])
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO campaigns (
@@ -274,8 +278,8 @@ def create_campaign(
                 google_sheet_url, google_sheet_phone_col, google_sheet_name_col,
                 dedup_intra_campaign, dedup_cross_active, enable_cooldown,
                 cooldown_answered_hours, cooldown_missed_hours, exclude_dnd,
-                created_at, updated_at
-            ) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                audience_filters, created_at, updated_at
+            ) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             cid, name, concurrency, ivr_id, ivr_name, api_key,
             did_mode, single_did, inter_call_delay,
@@ -286,22 +290,37 @@ def create_campaign(
             cooldown_answered_hours,
             cooldown_missed_hours,
             1 if exclude_dnd else 0,
+            filters_json,
             now, now
         ))
         conn.commit()
     return get_campaign(cid)
+
+def _format_campaign_dict(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+    if "audience_filters" in row_dict:
+        raw = row_dict["audience_filters"]
+        if isinstance(raw, str):
+            try:
+                row_dict["audience_filters"] = json.loads(raw) if raw.strip() else []
+            except Exception:
+                row_dict["audience_filters"] = []
+        elif raw is None:
+            row_dict["audience_filters"] = []
+    else:
+        row_dict["audience_filters"] = []
+    return row_dict
 
 def get_campaign(campaign_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()
         if not row:
             return None
-        return dict(row)
+        return _format_campaign_dict(dict(row))
 
 def list_campaigns() -> List[Dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM campaigns ORDER BY created_at DESC").fetchall()
-        return [dict(r) for r in rows]
+        return [_format_campaign_dict(dict(r)) for r in rows]
 
 def update_campaign_status(campaign_id: str, status: str):
     now = get_now_ist_str()
@@ -314,14 +333,21 @@ def update_campaign_settings(campaign_id: str, updates: Dict[str, Any]) -> Optio
         "name", "concurrency", "ivr_id", "ivr_name", "api_key", "did_mode", "single_did",
         "inter_call_delay", "google_sheet_url", "google_sheet_phone_col", "google_sheet_name_col",
         "dedup_intra_campaign", "dedup_cross_active", "enable_cooldown",
-        "cooldown_answered_hours", "cooldown_missed_hours", "exclude_dnd"
+        "cooldown_answered_hours", "cooldown_missed_hours", "exclude_dnd", "audience_filters"
     ]
     set_clause = []
     params = []
     for k, v in updates.items():
         if k in allowed:
             set_clause.append(f"{k} = ?")
-            if isinstance(v, bool):
+            if k == "audience_filters":
+                if isinstance(v, (list, dict)):
+                    params.append(json.dumps(v))
+                elif isinstance(v, str):
+                    params.append(v)
+                else:
+                    params.append("[]")
+            elif isinstance(v, bool):
                 params.append(1 if v else 0)
             else:
                 params.append(v)

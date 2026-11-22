@@ -60,6 +60,7 @@ import ContactsCRM from "../components/ContactsCRM";
 import AudienceFilterBuilder, { FilterRule } from "../components/AudienceFilterBuilder";
 import LeadTimelineDrawer from "../components/LeadTimelineDrawer";
 import WebhooksModal from "../components/WebhooksModal";
+import CampaignAudienceFilters from "../components/CampaignAudienceFilters";
 
 const getApiBase = () => {
   if (typeof window !== "undefined") {
@@ -87,6 +88,7 @@ interface CampaignItem {
   google_sheet_url?: string;
   google_sheet_phone_col?: string;
   google_sheet_name_col?: string;
+  audience_filters?: FilterRule[];
   total_leads: number;
   completed_leads: number;
   answered_leads: number;
@@ -1930,6 +1932,13 @@ export default function SmartfloDialerApp() {
                                       </div>
                                     </div>
 
+                                    {/* Audience Targeting Filters Applied */}
+                                    <CampaignAudienceFilters
+                                      filters={camp.audience_filters}
+                                      variant="drawer"
+                                      totalLeads={camp.total_leads}
+                                    />
+
                                     {/* Direct Quick Shortcuts */}
                                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
                                       <div className="flex items-center gap-3 text-slate-500">
@@ -2029,6 +2038,9 @@ export default function SmartfloDialerApp() {
                             </span>
                           )}
                         </div>
+
+                        {/* Audience Filters Badge */}
+                        <CampaignAudienceFilters filters={camp.audience_filters} variant="compact" />
 
                         {/* Progress Bar */}
                         <div className="mt-4">
@@ -2397,12 +2409,24 @@ export default function SmartfloDialerApp() {
                     })}
                   </div>
                 </div>
+
+                {/* Audience Targeting & Dynamic Filters Card */}
+                <CampaignAudienceFilters
+                  filters={activeCamp?.audience_filters}
+                  variant="card"
+                  totalLeads={activeCamp?.total_leads}
+                  onRefineClick={() => {
+                    setCampaignTab("leads");
+                    setIngestTab("audience");
+                  }}
+                />
               </div>
             )}
 
             {/* TAB CONTENT 2: CONFIGURE IVR & CAMPAIGN SETTINGS */}
             {campaignTab === "settings" && (
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-6">
+              <div className="space-y-6">
+                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-6">
                 <div>
                   <h2 className="text-base font-bold text-slate-900">Campaign & Telephony Configuration</h2>
                   <p className="text-xs text-slate-500 mt-0.5">
@@ -2669,11 +2693,31 @@ export default function SmartfloDialerApp() {
                   </button>
                 </div>
               </div>
+
+              {/* Audience Targeting Criteria */}
+              <CampaignAudienceFilters
+                filters={activeCamp?.audience_filters}
+                variant="card"
+                totalLeads={activeCamp?.total_leads}
+                onRefineClick={() => {
+                  setCampaignTab("leads");
+                  setIngestTab("audience");
+                }}
+              />
+            </div>
             )}
 
             {/* TAB CONTENT 3: ADD DATA & LEADS TABLE */}
             {campaignTab === "leads" && (
               <div className="space-y-6">
+                {/* Active Audience Filters Banner */}
+                <CampaignAudienceFilters
+                  filters={activeCamp?.audience_filters}
+                  variant="banner"
+                  totalLeads={activeCamp?.total_leads}
+                  onRefineClick={() => setIngestTab("audience")}
+                />
+
                 {/* INGESTION SECTION */}
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
