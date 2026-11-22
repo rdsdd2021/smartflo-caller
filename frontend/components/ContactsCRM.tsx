@@ -10,6 +10,7 @@ import {
   Settings,
   Filter,
   CheckCircle2,
+  Check,
   Clock,
   Phone,
   Trash2,
@@ -22,7 +23,9 @@ import {
   FileSpreadsheet,
   X,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  Sliders,
+  Eye
 } from "lucide-react";
 
 interface ContactItem {
@@ -61,12 +64,22 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
-  // Custom Datapoints Schema
+  // Custom Datapoints Schema & Visibility
   const [fields, setFields] = useState<CustomFieldMeta[]>([]);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
+  const [isColumnsDropdownOpen, setIsColumnsDropdownOpen] = useState(false);
   const [isFieldModalOpen, setIsFieldModalOpen] = useState(false);
   const [newFieldLabel, setNewFieldLabel] = useState("");
   const [newFieldType, setNewFieldType] = useState("text");
   const [newFieldOptions, setNewFieldOptions] = useState("");
+
+  // Edit Field State
+  const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editType, setEditType] = useState("text");
+  const [editOptions, setEditOptions] = useState("");
+  const [editFilterEnabled, setEditFilterEnabled] = useState(true);
+  const [isSavingField, setIsSavingField] = useState(false);
 
   // Upload Modal State
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -90,9 +103,97 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
       const res = await fetch(`${apiBase}/contacts/fields`);
       if (res.ok) {
         const data = await res.json();
-        setFields(data.fields || []);
+        const loadedFields: CustomFieldMeta[] = data.fields || [];
+        setFields(loadedFields);
+
+        // Initialize visible columns
+        setVisibleColumns((prev) => {
+          if (prev.length > 0) return prev;
+          try {
+            const saved = localStorage.getItem("crm_visible_columns");
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            }
+          } catch {}
+          return [
+            "phone_number",
+            "name",
+            ...loadedFields.map((f) => f.field_key),
+            "total_calls_count",
+            "last_call_status",
+            "last_dtmf"
+          ];
+        });
       }
     } catch {}
+  };
+
+  const toggleColumn = (colKey: string) => {
+    setVisibleColumns((prev) => {
+      let updated: string[];
+      if (prev.includes(colKey)) {
+        if (prev.length <= 1) return prev;
+        updated = prev.filter((k) => k !== colKey);
+      } else {
+        updated = [...prev, colKey];
+      }
+      try {
+        localStorage.setItem("crm_visible_columns", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  };
+
+  const showAllColumns = () => {
+    const all = [
+      "phone_number",
+      "name",
+      ...fields.map((f) => f.field_key),
+      "total_calls_count",
+      "last_call_status",
+      "last_dtmf"
+    ];
+    setVisibleColumns(all);
+    try {
+      localStorage.setItem("crm_visible_columns", JSON.stringify(all));
+    } catch {}
+  };
+
+  const handleStartEditField = (f: CustomFieldMeta) => {
+    setEditingFieldId(f.id || f.field_key);
+    setEditLabel(f.label);
+    setEditType(f.field_type || "text");
+    setEditOptions((f.options || []).join(", "));
+    setEditFilterEnabled(f.is_filter_enabled !== false);
+  };
+
+  const handleSaveEditField = async () => {
+    if (!editingFieldId || !editLabel.trim()) return;
+    setIsSavingField(true);
+    try {
+      const optionsArray = editOptions
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const res = await fetch(`${apiBase}/contacts/fields/${editingFieldId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: editLabel.trim(),
+          field_type: editType,
+          options: optionsArray,
+          is_filter_enabled: editFilterEnabled
+        })
+      });
+      if (res.ok) {
+        setEditingFieldId(null);
+        await fetchFields();
+      }
+    } catch {} finally {
+      setIsSavingField(false);
+    }
   };
 
   const fetchContacts = async () => {
@@ -359,7 +460,86 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
             />
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-slate-500">
+          <div className="flex items-center gap-2.5 text-xs text-slate-500">
+            {/* Column Visibility Selector Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsColumnsDropdownOpen(!isColumnsDropdownOpen)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 shadow-2xs transition-colors"
+                title="Choose visible table columns"
+              >
+                <Sliders className="w-3.5 h-3.5 text-slate-500" />
+                <span>Columns ({visibleColumns.length})</span>
+              </button>
+
+              {isColumnsDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setIsColumnsDropdownOpen(false)} />
+                  <div className="absolute right-0 mt-1 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-30 p-3 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <span className="font-bold text-slate-900">Visible Columns</span>
+                      <button
+                        type="button"
+                        onClick={showAllColumns}
+                        className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800"
+                      >
+                        Show All
+                      </button>
+                    </div>
+
+                    <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Core Info
+                      </span>
+                      {[
+                        { key: "phone_number", label: "Phone Number" },
+                        { key: "name", label: "Full Name" },
+                        { key: "total_calls_count", label: "Total Calls" },
+                        { key: "last_call_status", label: "Last Outcome" },
+                        { key: "last_dtmf", label: "Last DTMF" }
+                      ].map((col) => (
+                        <label
+                          key={col.key}
+                          className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer select-none text-slate-700"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={visibleColumns.includes(col.key)}
+                            onChange={() => toggleColumn(col.key)}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <span className="font-medium">{col.label}</span>
+                        </label>
+                      ))}
+
+                      {fields.length > 0 && (
+                        <>
+                          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block pt-2 mb-1">
+                            Custom Datapoints
+                          </span>
+                          {fields.map((f) => (
+                            <label
+                              key={f.field_key}
+                              className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer select-none text-slate-700"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={visibleColumns.includes(f.field_key)}
+                                onChange={() => toggleColumn(f.field_key)}
+                                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                              />
+                              <span className="font-medium truncate">{f.label}</span>
+                            </label>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
             <span>Show:</span>
             <select
               value={pageSize}
@@ -369,9 +549,9 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
               }}
               className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-700"
             >
-              <option value={25}>25 contacts</option>
-              <option value={50}>50 contacts</option>
-              <option value={100}>100 contacts</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
             </select>
             <button
               onClick={fetchContacts}
@@ -383,33 +563,37 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
           </div>
         </div>
 
-        {/* Master Contacts Table */}
+        {/* Master Contacts Table (Dynamic Headers & Columns) */}
         <div className="overflow-x-auto rounded-lg border border-slate-200">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
               <tr>
-                <th className="py-2.5 px-3">#</th>
-                <th className="py-2.5 px-3">Phone Number</th>
-                <th className="py-2.5 px-3">Name</th>
-                <th className="py-2.5 px-3">Stream</th>
-                <th className="py-2.5 px-3">Community</th>
-                <th className="py-2.5 px-3">Gender</th>
-                <th className="py-2.5 px-3">School</th>
-                <th className="py-2.5 px-3">Total Calls</th>
-                <th className="py-2.5 px-3">Last Outcome</th>
-                <th className="py-2.5 px-3">Last DTMF</th>
+                <th className="py-2.5 px-3 w-12">#</th>
+                {visibleColumns.includes("phone_number") && <th className="py-2.5 px-3">Phone Number</th>}
+                {visibleColumns.includes("name") && <th className="py-2.5 px-3">Name</th>}
+                {fields.map((f) => {
+                  if (!visibleColumns.includes(f.field_key)) return null;
+                  return (
+                    <th key={f.field_key} className="py-2.5 px-3 whitespace-nowrap">
+                      {f.label}
+                    </th>
+                  );
+                })}
+                {visibleColumns.includes("total_calls_count") && <th className="py-2.5 px-3">Total Calls</th>}
+                {visibleColumns.includes("last_call_status") && <th className="py-2.5 px-3">Last Outcome</th>}
+                {visibleColumns.includes("last_dtmf") && <th className="py-2.5 px-3">Last DTMF</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={10} className="py-10 text-center text-slate-400 animate-pulse">
+                  <td colSpan={1 + visibleColumns.length} className="py-10 text-center text-slate-400 animate-pulse">
                     Loading contacts from Supabase...
                   </td>
                 </tr>
               ) : contacts.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
+                  <td colSpan={1 + visibleColumns.length} className="py-12 text-center text-slate-400">
                     <Database className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-xs font-semibold text-slate-700">No contacts in directory</p>
                     <p className="text-[11px] text-slate-400 mt-0.5">
@@ -429,55 +613,73 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
                       <td className="py-2.5 px-3 text-slate-400 font-mono">
                         {(page - 1) * pageSize + idx + 1}
                       </td>
-                      <td className="py-2.5 px-3 font-mono font-semibold text-slate-900 group-hover:text-indigo-600 transition-colors">
-                        {contact.phone_number}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-700 font-medium">
-                        {contact.name || "—"}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600">
-                        {attrs.stream ? (
-                          <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] font-medium">
-                            {attrs.stream}
-                          </span>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600">
-                        {attrs.community || attrs.category || "—"}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600">
-                        {attrs.gender || "—"}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600 truncate max-w-[150px]" title={attrs.school || ""}>
-                        {attrs.school || attrs.college || "—"}
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-indigo-600">
-                        {contact.total_calls_count || 0}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        {contact.last_call_status ? (
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                            contact.last_call_status === "answered" || contact.last_call_status === "completed"
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-slate-100 text-slate-600 border-slate-200"
-                          }`}>
-                            {contact.last_call_status.toUpperCase()}
-                          </span>
-                        ) : (
-                          <span className="text-slate-300">Never called</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        {contact.last_dtmf ? (
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold font-mono text-xs">
-                            {contact.last_dtmf}
-                          </span>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
-                      </td>
+
+                      {visibleColumns.includes("phone_number") && (
+                        <td className="py-2.5 px-3 font-mono font-semibold text-slate-900 group-hover:text-indigo-600 transition-colors whitespace-nowrap">
+                          {contact.phone_number}
+                        </td>
+                      )}
+
+                      {visibleColumns.includes("name") && (
+                        <td className="py-2.5 px-3 text-slate-700 font-medium whitespace-nowrap">
+                          {contact.name || "—"}
+                        </td>
+                      )}
+
+                      {fields.map((f) => {
+                        if (!visibleColumns.includes(f.field_key)) return null;
+                        const val = attrs[f.field_key];
+                        const hasVal = val !== undefined && val !== null && String(val).trim() !== "";
+                        return (
+                          <td key={f.field_key} className="py-2.5 px-3 text-slate-600 max-w-[180px] truncate" title={hasVal ? String(val) : ""}>
+                            {hasVal ? (
+                              f.field_type === "select" ? (
+                                <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] font-medium">
+                                  {String(val)}
+                                </span>
+                              ) : (
+                                <span>{String(val)}</span>
+                              )
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+
+                      {visibleColumns.includes("total_calls_count") && (
+                        <td className="py-2.5 px-3 font-semibold text-indigo-600">
+                          {contact.total_calls_count || 0}
+                        </td>
+                      )}
+
+                      {visibleColumns.includes("last_call_status") && (
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          {contact.last_call_status ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                              contact.last_call_status === "answered" || contact.last_call_status === "completed"
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-slate-100 text-slate-600 border-slate-200"
+                            }`}>
+                              {contact.last_call_status.toUpperCase()}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300">Never called</span>
+                          )}
+                        </td>
+                      )}
+
+                      {visibleColumns.includes("last_dtmf") && (
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          {contact.last_dtmf ? (
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold font-mono text-xs">
+                              {contact.last_dtmf}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })
@@ -531,25 +733,113 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
               <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
                 Existing Attributes
               </span>
-              {fields.map((f) => (
-                <div key={f.field_key} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
-                  <div>
-                    <span className="font-bold text-slate-900 block">{f.label}</span>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      Key: {f.field_key} • Type: {f.field_type} {f.options?.length ? `(${f.options.join(", ")})` : ""}
-                    </span>
+              {fields.map((f) => {
+                const isEditing = editingFieldId === (f.id || f.field_key);
+                if (isEditing) {
+                  return (
+                    <div key={f.field_key} className="p-3 rounded-xl bg-indigo-50/80 border border-indigo-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-indigo-950">Editing: {f.field_key}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Field key is fixed</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Label</label>
+                          <input
+                            type="text"
+                            value={editLabel}
+                            onChange={(e) => setEditLabel(e.target.value)}
+                            className="w-full text-xs px-2 py-1 bg-white border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Type</label>
+                          <select
+                            value={editType}
+                            onChange={(e) => setEditType(e.target.value)}
+                            className="w-full text-xs px-2 py-1 bg-white border border-slate-200 rounded"
+                          >
+                            <option value="text">Text Input</option>
+                            <option value="select">Select Dropdown</option>
+                            <option value="number">Numeric</option>
+                          </select>
+                        </div>
+                      </div>
+                      {editType === "select" && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">
+                            Options (comma-separated)
+                          </label>
+                          <input
+                            type="text"
+                            value={editOptions}
+                            onChange={(e) => setEditOptions(e.target.value)}
+                            className="w-full text-xs px-2 py-1 bg-white border border-slate-200 rounded"
+                          />
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="flex items-center gap-1.5 text-[11px] text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={editFilterEnabled}
+                            onChange={(e) => setEditFilterEnabled(e.target.checked)}
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <span>Enable as audience filter</span>
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingFieldId(null)}
+                            className="px-2 py-1 rounded text-[11px] font-medium text-slate-600 hover:bg-slate-200/60"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveEditField}
+                            disabled={isSavingField || !editLabel.trim()}
+                            className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold shadow-2xs disabled:opacity-50 inline-flex items-center gap-1"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Save Changes</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={f.field_key} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs hover:border-slate-300 transition-colors">
+                    <div>
+                      <span className="font-bold text-slate-900 block">{f.label}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Key: <span className="text-indigo-600">{f.field_key}</span> • Type: {f.field_type} {f.options?.length ? `(${f.options.join(", ")})` : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleStartEditField(f)}
+                        className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                        title="Edit datapoint definition"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      {f.id && (
+                        <button
+                          onClick={() => handleDeleteField(f.id)}
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                          title="Remove field"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  {f.id && (
-                    <button
-                      onClick={() => handleDeleteField(f.id)}
-                      className="p-1 text-slate-400 hover:text-rose-600 rounded transition-colors"
-                      title="Remove field"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Add New Field Form */}

@@ -56,11 +56,13 @@ class ContactsService:
 
     def update_field_meta(self, field_id: str, updates: Dict[str, Any]) -> bool:
         """Updates an existing datapoint label, options, or filter status."""
-        return supabase.update("contact_fields_meta", {"id": field_id}, updates)
+        match = {"id": field_id} if (len(field_id) == 36 and "-" in field_id) else {"field_key": field_id}
+        return supabase.update("contact_fields_meta", match, updates)
 
     def delete_field_meta(self, field_id: str) -> bool:
         """Removes a custom datapoint definition."""
-        return supabase.delete("contact_fields_meta", {"id": field_id})
+        match = {"id": field_id} if (len(field_id) == 36 and "-" in field_id) else {"field_key": field_id}
+        return supabase.delete("contact_fields_meta", match)
 
     # -------------------------------------------------------------
     # 2. AUDIENCE FILTER BUILDER & "CHECK COUNT"
