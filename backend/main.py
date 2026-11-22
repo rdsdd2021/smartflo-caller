@@ -163,6 +163,85 @@ def update_contact(contact_id: str, payload: UpdateContactRequest):
     ok = contacts_service.update_contact(contact_id, updates)
     return {"success": ok}
 
+@app.get("/api/contacts/sample-template")
+def download_sample_contacts_template(format: str = Query("csv", pattern="^(csv|xlsx)$")):
+    fields = contacts_service.get_fields_meta()
+    
+    headers = ["phone_number", "name"]
+    for f in fields:
+        k = f.get("field_key")
+        if k and k not in ["phone_number", "name", "phone", "mobile", "student_name"]:
+            headers.append(k)
+            
+    sample_rows = [
+        ["919876543210", "Rahul Sharma", "Male", "General", "Science", "Delhi Public School", "Delhi", "94"],
+        ["919876543211", "Priya Patel", "Female", "OBC", "Commerce", "St. Xaviers High School", "Ahmedabad", "88"],
+        ["919876543212", "Ananya Das", "Female", "General", "Arts", "Modern High School", "Kolkata", "91"],
+        ["919876543213", "Aman Verma", "Male", "SC", "Science", "Kendriya Vidyalaya", "Lucknow", "82"],
+        ["919876543214", "Sneha Kulkarni", "Female", "EWS", "Commerce", "Bishop Cotton School", "Pune", "86"]
+    ]
+    
+    normalized_rows = []
+    for r in sample_rows:
+        row = list(r)
+        if len(row) < len(headers):
+            row.extend([""] * (len(headers) - len(row)))
+        else:
+            row = row[:len(headers)]
+        normalized_rows.append(row)
+
+    if format == "xlsx":
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Master Contacts Template"
+        ws.append(headers)
+
+        header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+        header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        center_align = Alignment(horizontal="center", vertical="center")
+
+        for col_num in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+
+        for row in normalized_rows:
+            ws.append(row)
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 16)
+
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+
+        return StreamingResponse(
+            stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=sample_contacts_template.xlsx"}
+        )
+    else:
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(headers)
+        for r in normalized_rows:
+            writer.writerow(r)
+
+        csv_data = output.getvalue()
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=sample_contacts_template.csv"}
+        )
+
 @app.post("/api/contacts/upload")
 async def upload_contacts_file(
     file: UploadFile = File(...),

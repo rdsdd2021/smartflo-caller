@@ -1765,6 +1765,35 @@ export default function SmartfloDialerApp() {
                       <FileSpreadsheet className="w-8 h-8 text-slate-400 mx-auto mb-2" />
                       <p className="text-xs font-semibold text-slate-700">Upload CSV or Excel file</p>
                       <p className="text-[11px] text-slate-500 mt-0.5">Drag and drop or browse your file (up to 50,000 numbers)</p>
+                      <div className="mt-2.5 flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const csv = "phone_number,name\n919876543210,Rahul Sharma\n919876543211,Priya Patel\n919876543212,Ananya Das";
+                            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = "sample_leads.csv";
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                            document.body.removeChild(a);
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 transition-colors shadow-2xs"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Download Sample CSV</span>
+                        </button>
+                        <a
+                          href={`${API_BASE}/contacts/sample-template?format=xlsx`}
+                          download="sample_leads.xlsx"
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-900 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 transition-colors shadow-2xs"
+                        >
+                          <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                          <span>Download Sample Excel</span>
+                        </a>
+                      </div>
                       <input
                         type="file"
                         ref={fileInputRef}
