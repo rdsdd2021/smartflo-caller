@@ -487,6 +487,34 @@ class CampaignRunner:
                 except Exception as ex:
                     pass
 
+                # Dispatch Outbound Webhooks for subscribers
+                try:
+                    from webhook_service import webhook_service
+                    webhook_service.dispatch_event("call.completed", {
+                        "campaign_id": self.campaign_id,
+                        "campaign_name": self.campaign_data.get("name") or "Campaign",
+                        "phone_number": phone,
+                        "name": lead.get("name"),
+                        "status": final_status,
+                        "duration": final_duration,
+                        "dtmf": dtmf_pressed,
+                        "did_used": did,
+                        "call_time": call_time_str or call_time,
+                        "recording_url": cdr_record.get("recording_url") if cdr_record else None
+                    })
+                    if dtmf_pressed:
+                        webhook_service.dispatch_event("lead.dtmf_pressed", {
+                            "campaign_id": self.campaign_id,
+                            "campaign_name": self.campaign_data.get("name") or "Campaign",
+                            "phone_number": phone,
+                            "name": lead.get("name"),
+                            "dtmf": dtmf_pressed,
+                            "duration": final_duration,
+                            "call_time": call_time_str or call_time
+                        })
+                except Exception:
+                    pass
+
                 # 4. Live Write-Back to Google Sheet (if configured for this campaign)
                 sheet_url = self.campaign_data.get("google_sheet_url")
                 sheet_row = lead.get("sheet_row_index")

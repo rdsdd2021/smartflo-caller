@@ -256,3 +256,35 @@ class UpdateUserRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+# -------------------------------------------------------------
+# WEBHOOK MODELS
+# -------------------------------------------------------------
+class WebhookSubscriptionCreateRequest(BaseModel):
+    url: str
+    events: List[str] = ["*"]
+    secret: Optional[str] = None
+    description: Optional[str] = None
+
+class WebhookSubscriptionToggleRequest(BaseModel):
+    is_active: bool
+
+class WebhookTestRequest(BaseModel):
+    url: str
+    event: str = "call.completed"
+    secret: Optional[str] = None
+
+class SmartfloInboundWebhookModel(BaseModel):
+    call_id: Optional[str] = None
+    ref_id: Optional[str] = None
+    custom_id: Optional[str] = None
+    customer_number: Optional[str] = None
+    caller_id: Optional[str] = None
+    status: Optional[str] = None
+    event: Optional[str] = None
+    duration: Optional[int] = None
+    dtmf: Optional[str] = None
+    dtmf_input: Optional[str] = None
+    recording_url: Optional[str] = None
+    hangup_cause: Optional[str] = None
+    agent_id: Optional[str] = None

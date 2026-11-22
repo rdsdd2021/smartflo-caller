@@ -49,7 +49,9 @@ import {
   BarChart3,
   Activity,
   X,
-  Check
+  Check,
+  Webhook,
+  FileCode
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import UserManagementModal from "../components/UserManagementModal";
@@ -57,6 +59,7 @@ import ChangePasswordModal from "../components/ChangePasswordModal";
 import ContactsCRM from "../components/ContactsCRM";
 import AudienceFilterBuilder, { FilterRule } from "../components/AudienceFilterBuilder";
 import LeadTimelineDrawer from "../components/LeadTimelineDrawer";
+import WebhooksModal from "../components/WebhooksModal";
 
 const getApiBase = () => {
   if (typeof window !== "undefined") {
@@ -216,6 +219,7 @@ export default function SmartfloDialerApp() {
   // Modals
   const [isNewCampaignOpen, setIsNewCampaignOpen] = useState(false);
   const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
+  const [isWebhooksModalOpen, setIsWebhooksModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
 
@@ -1184,6 +1188,30 @@ export default function SmartfloDialerApp() {
 
         {/* Action Header Items */}
         <div className="flex items-center gap-2.5">
+          {/* API Docs Button (Interactive Swagger) */}
+          <a
+            href={API_BASE.replace("/api", "/docs")}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
+            title="Open Interactive Swagger API Documentation (/docs)"
+          >
+            <FileCode className="w-3.5 h-3.5 text-indigo-600" />
+            <span>API Docs</span>
+          </a>
+
+          {/* Webhook Integrations Modal Trigger */}
+          {isAdmin && (
+            <button
+              onClick={() => setIsWebhooksModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
+              title="Webhook Integrations & CRM Event Callbacks"
+            >
+              <Webhook className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Webhooks</span>
+            </button>
+          )}
+
           {/* Audio Studio (Admin & Superadmin) */}
           {isAdmin && (
             <button
@@ -3759,6 +3787,13 @@ export default function SmartfloDialerApp() {
           </div>
         </div>
       )}
+
+      {/* Webhook Integrations Modal */}
+      <WebhooksModal
+        isOpen={isWebhooksModalOpen}
+        onClose={() => setIsWebhooksModalOpen(false)}
+        apiBase={API_BASE}
+      />
     </div>
   );
 }

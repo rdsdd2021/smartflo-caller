@@ -31,10 +31,15 @@ from models import (
     LoginRequest,
     CreateUserRequest,
     UpdateUserRequest,
-    ChangePasswordRequest
+    ChangePasswordRequest,
+    WebhookSubscriptionCreateRequest,
+    WebhookSubscriptionToggleRequest,
+    WebhookTestRequest,
+    SmartfloInboundWebhookModel
 )
 from auth_service import auth_service, create_access_token, decode_access_token
 from contacts_service import contacts_service
+from webhook_service import webhook_service
 from queue_worker import campaign_engine, TOTAL_TRUNK_CAPACITY
 from excel_service import (
     export_records_to_excel_bytes,
@@ -45,7 +50,62 @@ from excel_service import (
 from smartflo_client import smartflo_client
 from google_sheets_service import google_sheets_service
 
-app = FastAPI(title="Smartflo Telecom Command Center API", version="3.0.0")
+API_DESCRIPTION = """
+## Smartflo Telecom Dialer & Contacts CRM REST API
+
+Welcome to the **Tata Tele Business Services (TTBS) Smartflo Cloud Dialer** command center API.
+
+### Core Capabilities
+- **High-Density Voice Pacing**: Orchestrates high-volume outbound calling across a 15-channel SIP trunk with automatic 44-DID round-robin rotation.
+- **Dynamic Contacts CRM**: Stores and filters 200,000+ leads with flexible schema definitions and JSONB query acceleration.
+- **Lead Conflict Prevention**: Built-in intra-campaign deduplication, active dial collision guards, and 24h/2h outcome-aware cooldown policies.
+- **Event-Driven Webhooks**:
+  - **Inbound Webhook Receiver**: Processes sub-second CDR and live DTMF callbacks from Smartflo (`POST /api/webhooks/smartflo`).
+  - **Outbound Webhook Dispatcher**: Fires signed HMAC-SHA256 events (`call.completed`, `lead.dtmf_pressed`, `campaign.finished`) to external CRM systems and webhook listeners.
+
+### Interactive Swagger UI
+Authorize using your Bearer JWT token by clicking the **Authorize** button on the top right.
+"""
+
+TAGS_METADATA = [
+    {
+        "name": "Authentication & Team",
+        "description": "User login, JWT token issuance, and Superadmin team management (RBAC).",
+    },
+    {
+        "name": "Campaign Operations",
+        "description": "Lifecycle orchestration for voice campaigns: create, start, pause, resume, clear, and export.",
+    },
+    {
+        "name": "Contacts CRM",
+        "description": "Master contact directory with customizable attributes, column visibility, and single/bulk ingestion.",
+    },
+    {
+        "name": "Audience Segmentation",
+        "description": "Dynamic filter builder for querying leads by tags, attributes, and call status.",
+    },
+    {
+        "name": "Telecom Trunk & Telemetry",
+        "description": "Trunk line utilization, active channel monitoring, and real-time WebSocket telemetry.",
+    },
+    {
+        "name": "IVR & Audio Flows",
+        "description": "Smartflo IVR flows, voice prompt management, and audio recording library.",
+    },
+    {
+        "name": "Webhooks & Integrations",
+        "description": "Inbound Smartflo telecom event callbacks and outbound webhook subscriptions with HMAC signature verification.",
+    },
+]
+
+app = FastAPI(
+    title="Smartflo Telecom Dialer & Contacts CRM API",
+    description=API_DESCRIPTION,
+    version="3.1.0",
+    openapi_tags=TAGS_METADATA,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,7 +115,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["Telecom Trunk & Telemetry"], summary="Health Check")
 def health_check():
     return {
         "status": "ok", 
@@ -94,7 +154,7 @@ def require_admin_or_superadmin(user: Dict[str, Any] = Depends(get_current_user)
 def on_app_startup():
     auth_service.init_default_superadmin()
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", tags=["Authentication & Team"], summary="Authenticate User")
 def login(payload: LoginRequest):
     user = auth_service.authenticate(payload.email, payload.password)
     if not user:
@@ -107,22 +167,22 @@ def login(payload: LoginRequest):
         "user": user
     }
 
-@app.get("/api/auth/me")
+@app.get("/api/auth/me", tags=["Authentication & Team"], summary="Get Current Authenticated User")
 def get_my_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
     return {"user": current_user}
 
-@app.put("/api/auth/me/password")
+@app.put("/api/auth/me/password", tags=["Authentication & Team"], summary="Change Current User Password")
 def change_my_password(payload: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
     ok, msg = auth_service.change_password(current_user["id"], payload.current_password, payload.new_password)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-@app.get("/api/auth/users")
+@app.get("/api/auth/users", tags=["Authentication & Team"], summary="List All Users (Superadmin Only)")
 def list_users(superadmin: Dict[str, Any] = Depends(require_superadmin)):
     return {"users": auth_service.list_users()}
 
-@app.post("/api/auth/users")
+@app.post("/api/auth/users", tags=["Authentication & Team"], summary="Create Team User (Superadmin Only)")
 def create_user(payload: CreateUserRequest, superadmin: Dict[str, Any] = Depends(require_superadmin)):
     ok, msg, user = auth_service.create_user(
         email=payload.email,
@@ -134,7 +194,7 @@ def create_user(payload: CreateUserRequest, superadmin: Dict[str, Any] = Depends
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg, "user": user}
 
-@app.put("/api/auth/users/{user_id}")
+@app.put("/api/auth/users/{user_id}", tags=["Authentication & Team"], summary="Update User Role/Status (Superadmin Only)")
 def update_user(user_id: str, payload: UpdateUserRequest, superadmin: Dict[str, Any] = Depends(require_superadmin)):
     updates = payload.model_dump(exclude_unset=True)
     ok, msg = auth_service.update_user(user_id, updates)
@@ -142,7 +202,7 @@ def update_user(user_id: str, payload: UpdateUserRequest, superadmin: Dict[str, 
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-@app.delete("/api/auth/users/{user_id}")
+@app.delete("/api/auth/users/{user_id}", tags=["Authentication & Team"], summary="Delete User (Superadmin Only)")
 def delete_user(user_id: str, superadmin: Dict[str, Any] = Depends(require_superadmin)):
     ok, msg = auth_service.delete_user(user_id, superadmin["id"])
     if not ok:
@@ -170,11 +230,12 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
     except Exception:
         ws_manager.disconnect(websocket)
 
-@app.post("/api/webhooks/smartflo")
+@app.post("/api/webhooks/smartflo", tags=["Webhooks & Integrations"], summary="Smartflo Inbound Webhook Receiver")
 async def smartflo_webhook_listener(request: Request):
     """
-    Sub-second telecom event webhook receiver for Smartflo callbacks.
-    Instantly broadcasts call ringing, pickup, DTMF, and hangup events.
+    Sub-second telecom event webhook receiver for Tata Smartflo callbacks.
+    Broadcasts ringing, pickup, DTMF, and hangup events in real time to UI via WebSocket,
+    and dispatches the payload to external webhook subscribers.
     """
     try:
         payload = await request.json()
@@ -187,7 +248,9 @@ async def smartflo_webhook_listener(request: Request):
     ref_id = payload.get("ref_id") or payload.get("custom_id")
     event = (payload.get("event") or payload.get("status") or "").lower()
     dtmf = payload.get("dtmf") or payload.get("dtmf_input")
+    call_id = payload.get("call_id") or payload.get("id")
 
+    # Broadcast to live UI via WebSocket
     await ws_manager.broadcast({
         "type": "telecom_event",
         "event": event,
@@ -196,33 +259,100 @@ async def smartflo_webhook_listener(request: Request):
         "payload": payload
     })
 
+    # Dispatch to external webhook subscribers
+    try:
+        webhook_service.dispatch_event("smartflo.callback", {
+            "ref_id": ref_id,
+            "call_id": call_id,
+            "event": event,
+            "dtmf": dtmf,
+            "payload": payload
+        })
+    except Exception:
+        pass
+
     return {"status": "ok", "received": True}
+
+# -------------------------------------------------------------
+# OUTBOUND WEBHOOK SUBSCRIPTIONS
+# -------------------------------------------------------------
+@app.get("/api/webhooks/subscriptions", tags=["Webhooks & Integrations"], summary="List Webhook Subscriptions")
+def list_webhook_subscriptions():
+    """Returns all registered outbound webhook subscriptions with target events and active status."""
+    return {"subscriptions": webhook_service.list_subscriptions()}
+
+@app.post("/api/webhooks/subscriptions", tags=["Webhooks & Integrations"], summary="Create Webhook Subscription")
+def create_webhook_subscription(payload: WebhookSubscriptionCreateRequest):
+    """
+    Registers a new webhook URL to receive outbound dialer events.
+    Events can include: `call.completed`, `lead.dtmf_pressed`, `smartflo.callback`, or `*` for all.
+    Optionally pass a secret key to enable HMAC-SHA256 signature verification in the `X-Smartflo-Signature` header.
+    """
+    try:
+        sub = webhook_service.create_subscription(
+            url=payload.url,
+            events=payload.events,
+            secret=payload.secret,
+            description=payload.description
+        )
+        return {"success": True, "subscription": sub}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/webhooks/subscriptions/{sub_id}/toggle", tags=["Webhooks & Integrations"], summary="Toggle Webhook Active State")
+def toggle_webhook_subscription(sub_id: str, payload: WebhookSubscriptionToggleRequest):
+    """Enables or disables an existing webhook subscription."""
+    ok = webhook_service.toggle_subscription(sub_id, payload.is_active)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Webhook subscription not found")
+    return {"success": True, "is_active": payload.is_active}
+
+@app.delete("/api/webhooks/subscriptions/{sub_id}", tags=["Webhooks & Integrations"], summary="Delete Webhook Subscription")
+def delete_webhook_subscription(sub_id: str):
+    """Permanently deletes a registered webhook subscription."""
+    ok = webhook_service.delete_subscription(sub_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Webhook subscription not found")
+    return {"success": True}
+
+@app.post("/api/webhooks/test", tags=["Webhooks & Integrations"], summary="Test Webhook Endpoint")
+def test_webhook_url(payload: WebhookTestRequest):
+    """
+    Sends a sample test event payload to the specified webhook URL.
+    Returns HTTP response status code, latency in milliseconds, and response body snippet.
+    """
+    result = webhook_service.test_webhook_url(
+        url=payload.url,
+        event=payload.event,
+        secret=payload.secret
+    )
+    return result
 
 # -------------------------------------------------------------
 # GLOBAL TRUNK & SYSTEM OVERVIEW
 # -------------------------------------------------------------
-@app.get("/api/trunk/status", response_model=TrunkStatusResponse)
+@app.get("/api/trunk/status", response_model=TrunkStatusResponse, tags=["Telecom Trunk & Telemetry"], summary="Get Live Trunk Capacity & Channels")
 def get_trunk_status():
     return campaign_engine.get_trunk_status()
 
 # -------------------------------------------------------------
 # CONTACTS CRM, CUSTOM FIELDS & AUDIENCE SEGMENTATION
 # -------------------------------------------------------------
-@app.get("/api/contacts/fields")
+@app.get("/api/contacts/fields", tags=["Contacts CRM"], summary="Get All Custom Datapoints Schema")
 def get_custom_fields():
     return {
         "fields": contacts_service.get_all_filter_fields(),
         "custom_fields": contacts_service.get_fields_meta()
     }
 
-@app.get("/api/contacts/field-values")
+@app.get("/api/contacts/field-values", tags=["Contacts CRM"], summary="Get Distinct Values for Dropdown Filter")
 def get_field_distinct_values(field: str = Query(...)):
     return {
         "field": field,
         "values": contacts_service.get_distinct_field_values(field)
     }
 
-@app.post("/api/contacts/fields")
+@app.post("/api/contacts/fields", tags=["Contacts CRM"], summary="Create New Custom Datapoint Definition")
 def create_custom_field(payload: CreateFieldMetaRequest):
     field = contacts_service.create_field_meta(
         label=payload.label,
@@ -231,24 +361,24 @@ def create_custom_field(payload: CreateFieldMetaRequest):
     )
     return {"success": True, "field": field}
 
-@app.put("/api/contacts/fields/{field_id}")
+@app.put("/api/contacts/fields/{field_id}", tags=["Contacts CRM"], summary="Update Custom Datapoint Definition")
 def update_custom_field(field_id: str, payload: UpdateFieldMetaRequest):
     updates = payload.model_dump(exclude_unset=True)
     ok = contacts_service.update_field_meta(field_id, updates)
     return {"success": ok}
 
-@app.delete("/api/contacts/fields/{field_id}")
+@app.delete("/api/contacts/fields/{field_id}", tags=["Contacts CRM"], summary="Delete Custom Datapoint Definition")
 def delete_custom_field(field_id: str):
     ok = contacts_service.delete_field_meta(field_id)
     return {"success": ok}
 
-@app.post("/api/contacts/check-count")
+@app.post("/api/contacts/check-count", tags=["Audience Segmentation"], summary="Calculate Matching Audience Count")
 def check_audience_count(payload: CheckCountRequest):
     rules = [r.model_dump() for r in payload.filters]
     count = contacts_service.check_audience_count(rules)
     return {"matching_count": count, "filters": rules}
 
-@app.get("/api/contacts")
+@app.get("/api/contacts", tags=["Contacts CRM"], summary="List Contacts with Filtering & Search")
 def list_contacts(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
@@ -264,11 +394,11 @@ def list_contacts(
             pass
     return contacts_service.get_paginated_contacts(page=page, page_size=limit, search=search, filter_rules=filter_rules)
 
-@app.get("/api/contacts/{contact_id}/timeline")
+@app.get("/api/contacts/{contact_id}/timeline", tags=["Contacts CRM"], summary="Get Lifetime Call History Timeline")
 def get_contact_timeline(contact_id: str):
     return contacts_service.get_contact_timeline(contact_id)
 
-@app.post("/api/contacts")
+@app.post("/api/contacts", tags=["Contacts CRM"], summary="Create Single Contact")
 def create_contact(payload: CreateContactRequest):
     try:
         contact = contacts_service.create_single_contact(
@@ -280,18 +410,18 @@ def create_contact(payload: CreateContactRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.put("/api/contacts/{contact_id}")
+@app.put("/api/contacts/{contact_id}", tags=["Contacts CRM"], summary="Update Contact Attributes")
 def update_contact(contact_id: str, payload: UpdateContactRequest):
     updates = payload.model_dump(exclude_unset=True)
     ok = contacts_service.update_contact(contact_id, updates)
     return {"success": ok}
 
-@app.delete("/api/contacts/{contact_id}")
+@app.delete("/api/contacts/{contact_id}", tags=["Contacts CRM"], summary="Delete Single Contact")
 def delete_contact(contact_id: str):
     ok = contacts_service.delete_contact(contact_id)
     return {"success": ok}
 
-@app.get("/api/contacts/sample-template")
+@app.get("/api/contacts/sample-template", tags=["Contacts CRM"], summary="Download Sample Contacts Template")
 def download_sample_contacts_template(format: str = Query("csv", pattern="^(csv|xlsx)$")):
     fields = contacts_service.get_fields_meta()
     

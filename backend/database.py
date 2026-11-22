@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import uuid
+import json
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -94,6 +95,20 @@ def init_db():
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             url TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """)
+
+        # Webhook Subscriptions Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+            id TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            events TEXT NOT NULL,
+            secret TEXT,
+            description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         """)
@@ -726,6 +741,76 @@ def get_leads_for_export(campaign_id: str, status_filter: str = "all", dtmf_filt
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+# -------------------------------------------------------------
+# WEBHOOK SUBSCRIPTIONS
+# -------------------------------------------------------------
+def create_webhook_sub(url: str, events: List[str], secret: Optional[str] = None, description: Optional[str] = None) -> Dict[str, Any]:
+    sub_id = f"whk_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now().isoformat()
+    events_json = json.dumps(events)
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO webhook_subscriptions (id, url, events, secret, description, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        """, (sub_id, url, events_json, secret or None, description or None, now_iso, now_iso))
+        conn.commit()
+    return {
+        "id": sub_id,
+        "url": url,
+        "events": events,
+        "secret": secret,
+        "description": description,
+        "is_active": True,
+        "created_at": now_iso,
+        "updated_at": now_iso
+    }
+
+def list_webhook_subs() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM webhook_subscriptions ORDER BY created_at DESC").fetchall()
+        subs = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["events"] = json.loads(d["events"])
+            except Exception:
+                d["events"] = []
+            d["is_active"] = bool(d["is_active"])
+            subs.append(d)
+        return subs
+
+def delete_webhook_sub(sub_id: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM webhook_subscriptions WHERE id = ?", (sub_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def toggle_webhook_sub(sub_id: str, is_active: bool) -> bool:
+    now_iso = datetime.now().isoformat()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE webhook_subscriptions SET is_active = ?, updated_at = ? WHERE id = ?",
+            (1 if is_active else 0, now_iso, sub_id)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+def get_matching_webhook_subs(event: str) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM webhook_subscriptions WHERE is_active = 1").fetchall()
+        matching = []
+        for r in rows:
+            d = dict(r)
+            try:
+                evs = json.loads(d["events"])
+            except Exception:
+                evs = []
+            if "*" in evs or event in evs:
+                d["events"] = evs
+                d["is_active"] = True
+                matching.append(d)
+        return matching
 
 # Initialize schema and migrate legacy statuses immediately on import
 init_db()
