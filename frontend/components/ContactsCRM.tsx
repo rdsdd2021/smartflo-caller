@@ -134,9 +134,56 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Background Ingestion Job Tracking (Persists across page reloads & browser resets!)
+  interface ImportJobState {
+    id: string;
+    status: string;
+    total_rows: number;
+    processed_rows: number;
+    inserted_rows: number;
+    skipped_rows: number;
+    percent: number;
+    filename: string;
+    error_message?: string | null;
+  }
+  const [activeImportJob, setActiveImportJob] = useState<ImportJobState | null>(null);
+
   useEffect(() => {
     fetchFields();
+    checkActiveJobs();
   }, []);
+
+  const checkActiveJobs = async () => {
+    try {
+      const res = await fetch(`${apiBase}/import-jobs/active?job_type=contacts`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.jobs && data.jobs.length > 0) {
+          setActiveImportJob(data.jobs[0]);
+        }
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!activeImportJob || activeImportJob.status === "completed" || activeImportJob.status === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBase}/import-jobs/${activeImportJob.id}`);
+        if (res.ok) {
+          const job = await res.json();
+          setActiveImportJob(job);
+          if (job.status === "completed") {
+            fetchContacts();
+            fetchFields();
+          }
+        }
+      } catch {}
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [activeImportJob?.id, activeImportJob?.status]);
 
   useEffect(() => {
     fetchContacts();
@@ -563,7 +610,7 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
   const handleStartUpload = async () => {
     if (!uploadFile) return;
     setIsUploading(true);
-    setUploadStatus("Uploading and processing batch...");
+    setUploadStatus("Uploading file to server and starting background ingestion...");
     try {
       const formData = new FormData();
       formData.append("file", uploadFile);
@@ -575,14 +622,32 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setUploadStatus(`Successfully upserted ${data.contacts_upserted?.toLocaleString()} contacts!`);
-        setTimeout(() => {
+        if (data.job_id) {
+          setActiveImportJob({
+            id: data.job_id,
+            status: "processing",
+            total_rows: data.total_rows || 0,
+            processed_rows: 0,
+            inserted_rows: 0,
+            skipped_rows: 0,
+            percent: 0,
+            filename: data.filename || uploadFile.name,
+            error_message: null
+          });
           setIsUploadModalOpen(false);
           setUploadFile(null);
           setUploadStatus(null);
-          fetchContacts();
-          fetchFields();
-        }, 1500);
+          showToast(`Background ingestion started for ${data.total_rows?.toLocaleString() || "large"} rows!`);
+        } else {
+          setUploadStatus(`Successfully upserted ${data.contacts_upserted?.toLocaleString()} contacts!`);
+          setTimeout(() => {
+            setIsUploadModalOpen(false);
+            setUploadFile(null);
+            setUploadStatus(null);
+            fetchContacts();
+            fetchFields();
+          }, 1500);
+        }
       } else {
         setUploadStatus(data.detail || "Upload error");
       }
@@ -681,6 +746,88 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
           </button>
         </div>
       </div>
+
+      {/* Background Ingestion Progress Banner (Persists across page reloads & browser resets!) */}
+      {activeImportJob && (
+        <div className={`p-4 rounded-xl border transition-all ${
+          activeImportJob.status === "completed" 
+            ? "bg-emerald-50 border-emerald-200" 
+            : activeImportJob.status === "failed"
+            ? "bg-rose-50 border-rose-200"
+            : "bg-indigo-50/70 border-indigo-200"
+        }`}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              {activeImportJob.status === "completed" ? (
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-700 shrink-0">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+              ) : activeImportJob.status === "failed" ? (
+                <div className="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center text-rose-700 shrink-0">
+                  <XCircle className="w-5 h-5" />
+                </div>
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-700 shrink-0 animate-pulse">
+                  <RefreshCw className="w-4 h-4 animate-spin text-indigo-600" />
+                </div>
+              )}
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-xs text-slate-900">
+                    {activeImportJob.status === "completed"
+                      ? `Import Complete: ${activeImportJob.filename}`
+                      : activeImportJob.status === "failed"
+                      ? `Import Failed: ${activeImportJob.filename}`
+                      : `Ingesting Large File in Background: "${activeImportJob.filename}"`}
+                  </span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    activeImportJob.status === "completed"
+                      ? "bg-emerald-100 text-emerald-800"
+                      : activeImportJob.status === "failed"
+                      ? "bg-rose-100 text-rose-800"
+                      : "bg-indigo-100 text-indigo-800 animate-pulse"
+                  }`}>
+                    {activeImportJob.status.toUpperCase()}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {activeImportJob.status === "completed"
+                    ? `Successfully upserted ${activeImportJob.inserted_rows.toLocaleString()} contacts to your database.`
+                    : activeImportJob.status === "failed"
+                    ? (activeImportJob.error_message || "Encountered an error while reading the file.")
+                    : "Running asynchronously on the server. You can safely close or refresh this page without losing progress!"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs">
+              <div className="text-right">
+                <span className="font-mono font-bold text-slate-900">{activeImportJob.percent}%</span>
+                <span className="text-[11px] text-slate-500 block font-mono">
+                  {activeImportJob.processed_rows.toLocaleString()} / {activeImportJob.total_rows.toLocaleString()} rows
+                </span>
+              </div>
+              {activeImportJob.status === "completed" && (
+                <button
+                  onClick={() => setActiveImportJob(null)}
+                  className="px-2.5 py-1 text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg shadow-2xs"
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
+          </div>
+
+          {activeImportJob.status !== "completed" && activeImportJob.status !== "failed" && (
+            <div className="w-full h-2 bg-indigo-100 rounded-full overflow-hidden mt-3">
+              <div
+                className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(100, Math.max(1, activeImportJob.percent))}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 4 Executive CRM Metrics (Clean & Purposeful) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

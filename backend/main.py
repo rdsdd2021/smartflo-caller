@@ -49,6 +49,7 @@ from excel_service import (
 )
 from smartflo_client import smartflo_client
 from google_sheets_service import google_sheets_service
+from ingestion_service import ingestion_service, TEMP_UPLOADS_DIR
 
 API_DESCRIPTION = """
 ## Smartflo Telecom Dialer & Contacts CRM REST API
@@ -151,8 +152,13 @@ def require_admin_or_superadmin(user: Dict[str, Any] = Depends(get_current_user)
     return user
 
 @app.on_event("startup")
-def on_app_startup():
+async def on_app_startup():
     auth_service.init_default_superadmin()
+    try:
+        import asyncio
+        ingestion_service.set_event_loop(asyncio.get_running_loop())
+    except Exception as e:
+        print(f"[Startup] Ingestion event loop init notice: {e}")
 
 @app.post("/api/auth/login", tags=["Authentication & Team"], summary="Authenticate User")
 def login(payload: LoginRequest):
@@ -501,34 +507,65 @@ def download_sample_contacts_template(format: str = Query("csv", pattern="^(csv|
         )
 
 @app.post("/api/contacts/upload")
+@app.post("/api/contacts/upload-async")
 async def upload_contacts_file(
     file: UploadFile = File(...),
     mapping: Optional[str] = Form(None)
 ):
     import json
-    import csv
-    import openpyxl
+    import uuid
 
-    content = await file.read()
-    filename = (file.filename or "").lower()
-    rows = []
+    filename = file.filename or "contacts_upload.csv"
+    job_id = f"job_{uuid.uuid4().hex[:10]}"
+    safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
+    file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
 
-    if filename.endswith(".csv"):
-        text = content.decode("utf-8", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
-        rows = list(reader)
-    elif filename.endswith((".xlsx", ".xls")):
-        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-        sheet = wb.active
-        headers = [str(cell.value or "").strip() for cell in sheet[1]]
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            if any(row):
-                row_dict = {headers[i]: row[i] for i in range(len(headers)) if i < len(row)}
-                rows.append(row_dict)
+    # Stream write to disk in 1MB chunks (Never consumes more than 1MB RAM even for 1 Lakh rows!)
+    try:
+        with open(file_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
 
     column_mapping = json.loads(mapping) if mapping else {}
-    result = contacts_service.bulk_ingest_contacts(rows, column_mapping)
-    return result
+    total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
+
+    # Register persistent background job in database
+    job = database.create_import_job(
+        job_type="contacts",
+        filename=filename,
+        file_path=file_path,
+        total_rows=total_estimated,
+        metadata={"mapping": column_mapping},
+        job_id=job_id
+    )
+
+    # Launch non-blocking background ingestion worker
+    ingestion_service.start_contacts_job(job_id, file_path, filename, column_mapping)
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "processing",
+        "total_rows": total_estimated,
+        "filename": filename,
+        "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
+    }
+
+# -------------------------------------------------------------
+# BACKGROUND IMPORT JOB TRACKING ENDPOINTS
+# -------------------------------------------------------------
+@app.get("/api/import-jobs/active", tags=["Contacts CRM"], summary="Get Active Ingestion Jobs")
+def get_active_import_jobs(job_type: Optional[str] = Query(None)):
+    return {"jobs": database.list_active_import_jobs(job_type)}
+
+@app.get("/api/import-jobs/{job_id}", tags=["Contacts CRM"], summary="Get Import Job Status & Progress")
+def get_import_job_status(job_id: str):
+    job = database.get_import_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    return job
 
 # -------------------------------------------------------------
 # CAMPAIGN CRUD ENDPOINTS
@@ -761,6 +798,7 @@ def import_text(campaign_id: str, payload: ImportNumbersRequest):
 
 @app.post("/api/campaigns/{campaign_id}/upload-file")
 @app.post("/api/campaigns/{campaign_id}/import/file")
+@app.post("/api/campaigns/{campaign_id}/upload-async")
 async def upload_file(
     campaign_id: str,
     file: UploadFile = File(...),
@@ -769,27 +807,48 @@ async def upload_file(
     camp = database.get_campaign(campaign_id)
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    contents = await file.read()
-    parsed = parse_numbers_from_file(contents, file.filename)
-    if not parsed:
-        raise HTTPException(status_code=400, detail="Could not find valid phone numbers in file")
 
-    candidates = [{"phone_number": p[0], "name": p[1] if len(p) > 1 else ""} for p in parsed]
-    policies = {
-        "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
-        "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
-        "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
-        "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
-        "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
-        "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
-        "force_override": bool(force_override)
+    import uuid
+    filename = file.filename or "leads_upload.csv"
+    job_id = f"job_{uuid.uuid4().hex[:10]}"
+    safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
+    file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
+
+    # Stream write in 1MB chunks to disk
+    try:
+        with open(file_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
+
+    total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
+    database.create_import_job(
+        job_type="campaign_leads",
+        campaign_id=campaign_id,
+        filename=filename,
+        file_path=file_path,
+        total_rows=total_estimated,
+        metadata={"force_override": bool(force_override)},
+        job_id=job_id
+    )
+
+    ingestion_service.start_campaign_leads_job(
+        job_id=job_id,
+        campaign_id=campaign_id,
+        file_path=file_path,
+        filename=filename,
+        force_override=bool(force_override)
+    )
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "processing",
+        "total_rows": total_estimated,
+        "filename": filename,
+        "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
     }
-    eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(candidates, campaign_id, policies)
-    count = 0
-    if eligible:
-        sqlite_batch = [(l["phone_number"], l["name"]) for l in eligible]
-        count = database.bulk_insert_leads(campaign_id, sqlite_batch)
-    return {"success": True, "count": count, "imported_leads": count, "summary": summary}
 
 @app.post("/api/campaigns/{campaign_id}/sheets/inspect")
 def inspect_campaign_sheet(campaign_id: str, payload: GoogleSheetConnectRequest):

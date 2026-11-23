@@ -143,6 +143,26 @@ def init_db():
         if "audience_filters" not in cols:
             cursor.execute("ALTER TABLE campaigns ADD COLUMN audience_filters TEXT DEFAULT '[]';")
 
+        # Asynchronous Import Jobs Table (100K+ large dataset ingestion)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS import_jobs (
+            id TEXT PRIMARY KEY,
+            job_type TEXT NOT NULL,
+            campaign_id TEXT,
+            filename TEXT NOT NULL,
+            file_path TEXT,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            processed_rows INTEGER NOT NULL DEFAULT 0,
+            inserted_rows INTEGER NOT NULL DEFAULT 0,
+            skipped_rows INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            error_message TEXT,
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+
         conn.commit()
 
 # Default seed IVRs and recordings so UI is never blank
@@ -837,6 +857,116 @@ def get_matching_webhook_subs(event: str) -> List[Dict[str, Any]]:
                 d["is_active"] = True
                 matching.append(d)
         return matching
+
+# -------------------------------------------------------------
+# ASYNCHRONOUS INGESTION JOBS REPOSITORY (100K+ SCALE)
+# -------------------------------------------------------------
+def create_import_job(
+    job_type: str,
+    filename: str,
+    file_path: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    total_rows: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+    job_id: Optional[str] = None
+) -> Dict[str, Any]:
+    jid = job_id or f"job_{uuid.uuid4().hex[:10]}"
+    now = get_now_ist_str()
+    meta_json = json.dumps(metadata or {})
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO import_jobs (
+                id, job_type, campaign_id, filename, file_path,
+                total_rows, processed_rows, inserted_rows, skipped_rows,
+                status, error_message, metadata, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 'queued', NULL, ?, ?, ?)
+        """, (
+            jid, job_type, campaign_id, filename, file_path,
+            total_rows, meta_json, now, now
+        ))
+        conn.commit()
+    return get_import_job(jid)
+
+def update_import_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    allowed = [
+        "total_rows", "processed_rows", "inserted_rows", "skipped_rows",
+        "status", "error_message", "metadata", "file_path"
+    ]
+    set_clause = []
+    params = []
+    for k, v in updates.items():
+        if k in allowed:
+            set_clause.append(f"{k} = ?")
+            if k == "metadata" and isinstance(v, (dict, list)):
+                params.append(json.dumps(v))
+            else:
+                params.append(v)
+    if not set_clause:
+        return get_import_job(job_id)
+
+    set_clause.append("updated_at = ?")
+    params.append(get_now_ist_str())
+    params.append(job_id)
+
+    with get_connection() as conn:
+        conn.execute(f"UPDATE import_jobs SET {', '.join(set_clause)} WHERE id = ?", params)
+        conn.commit()
+    return get_import_job(job_id)
+
+def get_import_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM import_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["metadata"] = json.loads(d.get("metadata") or "{}")
+        except Exception:
+            d["metadata"] = {}
+        total = d.get("total_rows", 0)
+        proc = d.get("processed_rows", 0)
+        d["percent"] = round((proc / total * 100), 1) if total > 0 else (100.0 if d.get("status") == "completed" else 0.0)
+        return d
+
+def list_active_import_jobs(job_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        if job_type:
+            rows = conn.execute(
+                "SELECT * FROM import_jobs WHERE status IN ('queued', 'processing') AND job_type = ? ORDER BY created_at DESC",
+                (job_type,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM import_jobs WHERE status IN ('queued', 'processing') ORDER BY created_at DESC"
+            ).fetchall()
+        jobs = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.get("metadata") or "{}")
+            except Exception:
+                d["metadata"] = {}
+            total = d.get("total_rows", 0)
+            proc = d.get("processed_rows", 0)
+            d["percent"] = round((proc / total * 100), 1) if total > 0 else 0.0
+            jobs.append(d)
+        return jobs
+
+def list_recent_import_jobs(limit: int = 10) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        jobs = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.get("metadata") or "{}")
+            except Exception:
+                d["metadata"] = {}
+            total = d.get("total_rows", 0)
+            proc = d.get("processed_rows", 0)
+            d["percent"] = round((proc / total * 100), 1) if total > 0 else (100.0 if d.get("status") == "completed" else 0.0)
+            jobs.append(d)
+        return jobs
 
 # Initialize schema and migrate legacy statuses immediately on import
 init_db()

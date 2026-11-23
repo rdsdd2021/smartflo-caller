@@ -243,6 +243,40 @@ export default function SmartfloDialerApp() {
   const [newCampEnableCooldown, setNewCampEnableCooldown] = useState(true);
   const [newCampCooldownAnswered, setNewCampCooldownAnswered] = useState(24);
   const [newCampCooldownMissed, setNewCampCooldownMissed] = useState(2);
+
+  // Background Leads Ingestion Job Tracking (100K+ scale, survives page reloads)
+  const [activeCampaignJob, setActiveCampaignJob] = useState<{
+    id: string;
+    status: string;
+    total_rows: number;
+    processed_rows: number;
+    inserted_rows: number;
+    percent: number;
+    filename: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!activeCampaignJob || activeCampaignJob.status === "completed" || activeCampaignJob.status === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/import-jobs/${activeCampaignJob.id}`);
+        if (res.ok) {
+          const job = await res.json();
+          setActiveCampaignJob(job);
+          if (job.status === "completed") {
+            if (selectedCampaignIdRef.current) {
+              fetchCampaignDetail(selectedCampaignIdRef.current, false);
+              fetchCampaignLeads(selectedCampaignIdRef.current, 1, leadsPageSize, "all", "");
+            }
+            fetchCampaignsList();
+          }
+        }
+      } catch {}
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [activeCampaignJob?.id, activeCampaignJob?.status]);
   const [newCampExcludeDnd, setNewCampExcludeDnd] = useState(true);
   const [newCampForceOverride, setNewCampForceOverride] = useState(false);
   const [isDedupAccordionOpen, setIsDedupAccordionOpen] = useState(false);
@@ -941,16 +975,29 @@ export default function SmartfloDialerApp() {
       }
       const data = await res.json();
       if (res.ok && data.success) {
-        const count = data.imported_leads ?? data.count ?? 0;
-        showNotification(`File uploaded: Added ${count} leads.`, "success");
-        setLeadsPage(1);
-        setLeadsStatusFilter("all");
-        setLeadsSearch("");
-        fetchCampaignDetail(selectedCampaignId, false);
-        fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
-        if (data.summary) {
-          setIngestionSummary(data.summary);
-          setIsSummaryModalOpen(true);
+        if (data.job_id) {
+          showNotification(`File accepted (${data.total_rows?.toLocaleString() || "large"} rows). Ingesting in background!`, "success");
+          setActiveCampaignJob({
+            id: data.job_id,
+            status: "processing",
+            total_rows: data.total_rows || 0,
+            processed_rows: 0,
+            inserted_rows: 0,
+            percent: 0,
+            filename: data.filename || file.name
+          });
+        } else {
+          const count = data.imported_leads ?? data.count ?? 0;
+          showNotification(`File uploaded: Added ${count} leads.`, "success");
+          setLeadsPage(1);
+          setLeadsStatusFilter("all");
+          setLeadsSearch("");
+          fetchCampaignDetail(selectedCampaignId, false);
+          fetchCampaignLeads(selectedCampaignId, 1, leadsPageSize, "all", "");
+          if (data.summary) {
+            setIngestionSummary(data.summary);
+            setIsSummaryModalOpen(true);
+          }
         }
       } else {
         showNotification(data.detail || data.message || "Failed to process file.", "error");
@@ -2717,6 +2764,86 @@ export default function SmartfloDialerApp() {
                   totalLeads={activeCamp?.total_leads}
                   onRefineClick={() => setIngestTab("audience")}
                 />
+
+                {/* Active Campaign Leads Ingestion Banner */}
+                {activeCampaignJob && (
+                  <div className={`p-4 rounded-xl border transition-all ${
+                    activeCampaignJob.status === "completed"
+                      ? "bg-emerald-50 border-emerald-200"
+                      : activeCampaignJob.status === "failed"
+                      ? "bg-rose-50 border-rose-200"
+                      : "bg-indigo-50/70 border-indigo-200"
+                  }`}>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        {activeCampaignJob.status === "completed" ? (
+                          <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-700 shrink-0">
+                            <CheckCircle2 className="w-5 h-5" />
+                          </div>
+                        ) : activeCampaignJob.status === "failed" ? (
+                          <div className="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center text-rose-700 shrink-0">
+                            <AlertTriangle className="w-5 h-5" />
+                          </div>
+                        ) : (
+                          <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-700 shrink-0 animate-pulse">
+                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-600" />
+                          </div>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-slate-900">
+                              {activeCampaignJob.status === "completed"
+                                ? `Campaign Leads Ingestion Complete: ${activeCampaignJob.filename}`
+                                : activeCampaignJob.status === "failed"
+                                ? `Import Failed: ${activeCampaignJob.filename}`
+                                : `Ingesting Large Leads File in Background: "${activeCampaignJob.filename}"`}
+                            </span>
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                              activeCampaignJob.status === "completed"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : activeCampaignJob.status === "failed"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-indigo-100 text-indigo-800 animate-pulse"
+                            }`}>
+                              {activeCampaignJob.status.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            {activeCampaignJob.status === "completed"
+                              ? `Added ${activeCampaignJob.inserted_rows.toLocaleString()} leads to this campaign.`
+                              : "Processing in the background with deduplication & cooldown guard. You can safely close or reload this page!"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 text-xs">
+                        <div className="text-right">
+                          <span className="font-mono font-bold text-slate-900">{activeCampaignJob.percent}%</span>
+                          <span className="text-[11px] text-slate-500 block font-mono">
+                            {activeCampaignJob.processed_rows.toLocaleString()} / {activeCampaignJob.total_rows.toLocaleString()} rows
+                          </span>
+                        </div>
+                        {activeCampaignJob.status === "completed" && (
+                          <button
+                            onClick={() => setActiveCampaignJob(null)}
+                            className="px-2.5 py-1 text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-lg shadow-2xs"
+                          >
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {activeCampaignJob.status !== "completed" && activeCampaignJob.status !== "failed" && (
+                      <div className="w-full h-2 bg-indigo-100 rounded-full overflow-hidden mt-3">
+                        <div
+                          className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, Math.max(1, activeCampaignJob.percent))}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* INGESTION SECTION */}
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
