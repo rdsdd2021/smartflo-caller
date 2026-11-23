@@ -6,6 +6,7 @@ import uuid
 import re
 import io
 import csv
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 from supabase_client import supabase
@@ -177,40 +178,85 @@ class ContactsService:
 
         return fields
 
-    def get_distinct_field_values(self, field_key: str, limit: int = 50) -> List[str]:
-        """Dynamically fetches distinct existing values for any contact field or JSONB attribute."""
+    _distinct_cache: Dict[str, Any] = {}
+
+    def get_distinct_field_values(
+        self,
+        field_key: str,
+        limit: int = 500,
+        search: Optional[str] = None
+    ) -> List[str]:
+        """Dynamically fetches distinct existing values for any contact field or JSONB attribute with in-memory caching."""
         if field_key == "last_call_status":
-            return ["answered", "missed", "no_answer", "busy", "unreachable", "failed", "pending", "never_called"]
+            all_statuses = ["answered", "missed", "no_answer", "busy", "unreachable", "failed", "pending", "never_called"]
+            if search:
+                return [s for s in all_statuses if search.lower() in s.lower()]
+            return all_statuses
         if field_key == "last_dtmf":
-            return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "*", "#"]
+            all_dtmf = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "*", "#"]
+            if search:
+                return [d for d in all_dtmf if search in d]
+            return all_dtmf
+
+        # Fast in-memory cache lookup (5-minute TTL)
+        cache_key = f"{field_key}:{search or ''}:{limit}"
+        now_ts = time.time()
+        if cache_key in self._distinct_cache:
+            ts, cached_vals = self._distinct_cache[cache_key]
+            if now_ts - ts < 300:
+                return cached_vals
 
         values_set = set()
         # 1. Start with configured options if available
         known_meta = {f["field_key"]: f for f in self.get_fields_meta()}
         if field_key in known_meta and known_meta[field_key].get("options"):
             for opt in known_meta[field_key]["options"]:
-                if opt:
+                if opt and (not search or search.lower() in str(opt).lower()):
                     values_set.add(str(opt).strip())
 
         # 2. Query distinct values from actual database rows
         try:
             if field_key in self.STANDARD_COLUMNS:
-                rows = supabase.select("contacts", {"select": field_key, "limit": 200, f"{field_key}": "not.is.null"})
+                params = {
+                    "select": field_key,
+                    "limit": min(1000, limit * 3),
+                    f"{field_key}": "not.is.null"
+                }
+                if search:
+                    params[f"{field_key}"] = f"ilike.*{search}*"
+                rows = supabase.select("contacts", params)
                 for r in rows:
                     v = r.get(field_key)
                     if v is not None and str(v).strip():
                         values_set.add(str(v).strip())
             else:
-                rows = supabase.select("contacts", {"select": "attributes", "limit": 200})
-                for r in rows:
-                    attrs = r.get("attributes") or {}
-                    v = attrs.get(field_key)
-                    if v is not None and str(v).strip():
-                        values_set.add(str(v).strip())
+                # Target the exact JSONB property directly without pulling full objects
+                params = {
+                    "select": f"attributes->{field_key}",
+                    f"attributes->>{field_key}": "not.is.null",
+                    "limit": 1000
+                }
+                if search:
+                    params[f"attributes->>{field_key}"] = f"ilike.*{search}*"
+
+                # Page through up to 3 batches (up to 3,000 candidate contacts) to discover diverse values
+                for offset in [0, 1000, 2000]:
+                    params["offset"] = offset
+                    rows = supabase.select("contacts", params)
+                    if not rows:
+                        break
+                    for r in rows:
+                        v = r.get(field_key)
+                        if v is not None and str(v).strip():
+                            values_set.add(str(v).strip())
+                    if len(values_set) >= limit or len(rows) < 1000:
+                        break
         except Exception as e:
             print(f"[Supabase] Error fetching distinct values for {field_key}: {e}")
 
-        return sorted(list(values_set))[:limit]
+        result = sorted(list(values_set))[:limit]
+        self._distinct_cache[cache_key] = (now_ts, result)
+        return result
 
     def create_field_meta(self, label: str, field_type: str = "text", options: Optional[List[str]] = None) -> Dict[str, Any]:
         """Creates a new custom datapoint definition."""

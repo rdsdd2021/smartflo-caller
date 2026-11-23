@@ -370,10 +370,14 @@ def get_custom_fields():
     }
 
 @app.get("/api/contacts/field-values", tags=["Contacts CRM"], summary="Get Distinct Values for Dropdown Filter")
-def get_field_distinct_values(field: str = Query(...)):
+def get_field_distinct_values(
+    field: str = Query(...),
+    search: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000)
+):
     return {
         "field": field,
-        "values": contacts_service.get_distinct_field_values(field)
+        "values": contacts_service.get_distinct_field_values(field, limit=limit, search=search)
     }
 
 @app.post("/api/contacts/fields", tags=["Contacts CRM"], summary="Create New Custom Datapoint Definition")
