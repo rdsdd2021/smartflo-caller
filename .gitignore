@@ -48,6 +48,8 @@ service_account.json
 scratch/
 *.log
 logs/
+temp_uploads/
+*/temp_uploads/
 
 # OS & Editor
 .DS_Store

@@ -1,9 +1,15 @@
+import os
+import sys
 import io
+import json
+import uuid
+import traceback
+import logging
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Response, Request, WebSocket, WebSocketDisconnect, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, PlainTextResponse
+from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
 from config import config
 import database
 from ws_manager import ws_manager
@@ -115,6 +121,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "detail": f"Internal server error: {str(exc)}",
+            "error": str(type(exc).__name__)
+        }
+    )
 
 @app.get("/api/health", tags=["Telecom Trunk & Telemetry"], summary="Health Check")
 def health_check():
@@ -512,46 +530,52 @@ async def upload_contacts_file(
     file: UploadFile = File(...),
     mapping: Optional[str] = Form(None)
 ):
-    import json
-    import uuid
-
-    filename = file.filename or "contacts_upload.csv"
-    job_id = f"job_{uuid.uuid4().hex[:10]}"
-    safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
-    file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
-
-    # Stream write to disk in 1MB chunks (Never consumes more than 1MB RAM even for 1 Lakh rows!)
     try:
-        with open(file_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024):
-                f.write(chunk)
+        filename = file.filename or "contacts_upload.csv"
+        job_id = f"job_{uuid.uuid4().hex[:10]}"
+        safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
+        file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
+
+        # Stream write to disk in 1MB chunks (Never consumes more than 1MB RAM even for 1 Lakh rows!)
+        try:
+            with open(file_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    f.write(chunk)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
+
+        column_mapping = json.loads(mapping) if mapping else {}
+        total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
+
+        # Register persistent background job in database
+        job = database.create_import_job(
+            job_type="contacts",
+            filename=filename,
+            file_path=file_path,
+            total_rows=total_estimated,
+            metadata={"mapping": column_mapping},
+            job_id=job_id
+        )
+
+        # Launch non-blocking background ingestion worker
+        ingestion_service.start_contacts_job(job_id, file_path, filename, column_mapping)
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "processing",
+            "total_rows": total_estimated,
+            "filename": filename,
+            "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
-
-    column_mapping = json.loads(mapping) if mapping else {}
-    total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
-
-    # Register persistent background job in database
-    job = database.create_import_job(
-        job_type="contacts",
-        filename=filename,
-        file_path=file_path,
-        total_rows=total_estimated,
-        metadata={"mapping": column_mapping},
-        job_id=job_id
-    )
-
-    # Launch non-blocking background ingestion worker
-    ingestion_service.start_contacts_job(job_id, file_path, filename, column_mapping)
-
-    return {
-        "success": True,
-        "job_id": job_id,
-        "status": "processing",
-        "total_rows": total_estimated,
-        "filename": filename,
-        "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
-    }
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "detail": f"Contacts upload failed: {str(e)}"}
+        )
 
 # -------------------------------------------------------------
 # BACKGROUND IMPORT JOB TRACKING ENDPOINTS
@@ -804,51 +828,59 @@ async def upload_file(
     file: UploadFile = File(...),
     force_override: Optional[bool] = Form(False)
 ):
-    camp = database.get_campaign(campaign_id)
-    if not camp:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    import uuid
-    filename = file.filename or "leads_upload.csv"
-    job_id = f"job_{uuid.uuid4().hex[:10]}"
-    safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
-    file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
-
-    # Stream write in 1MB chunks to disk
     try:
-        with open(file_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024):
-                f.write(chunk)
+        camp = database.get_campaign(campaign_id)
+        if not camp:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        filename = file.filename or "leads_upload.csv"
+        job_id = f"job_{uuid.uuid4().hex[:10]}"
+        safe_name = "".join(c for c in filename if c.isalnum() or c in (".", "_", "-"))
+        file_path = os.path.join(TEMP_UPLOADS_DIR, f"{job_id}_{safe_name}")
+
+        # Stream write in 1MB chunks to disk
+        try:
+            with open(file_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    f.write(chunk)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
+
+        total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
+        database.create_import_job(
+            job_type="campaign_leads",
+            campaign_id=campaign_id,
+            filename=filename,
+            file_path=file_path,
+            total_rows=total_estimated,
+            metadata={"force_override": bool(force_override)},
+            job_id=job_id
+        )
+
+        ingestion_service.start_campaign_leads_job(
+            job_id=job_id,
+            campaign_id=campaign_id,
+            file_path=file_path,
+            filename=filename,
+            force_override=bool(force_override)
+        )
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "processing",
+            "total_rows": total_estimated,
+            "filename": filename,
+            "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to receive file: {e}")
-
-    total_estimated = ingestion_service.estimate_total_rows(file_path, filename)
-    database.create_import_job(
-        job_type="campaign_leads",
-        campaign_id=campaign_id,
-        filename=filename,
-        file_path=file_path,
-        total_rows=total_estimated,
-        metadata={"force_override": bool(force_override)},
-        job_id=job_id
-    )
-
-    ingestion_service.start_campaign_leads_job(
-        job_id=job_id,
-        campaign_id=campaign_id,
-        file_path=file_path,
-        filename=filename,
-        force_override=bool(force_override)
-    )
-
-    return {
-        "success": True,
-        "job_id": job_id,
-        "status": "processing",
-        "total_rows": total_estimated,
-        "filename": filename,
-        "message": f"File received ({total_estimated} rows). Ingestion is running in the background."
-    }
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "detail": f"Campaign file upload failed: {str(e)}"}
+        )
 
 @app.post("/api/campaigns/{campaign_id}/sheets/inspect")
 def inspect_campaign_sheet(campaign_id: str, payload: GoogleSheetConnectRequest):

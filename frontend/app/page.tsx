@@ -973,7 +973,13 @@ export default function SmartfloDialerApp() {
           body: formData
         });
       }
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        data = { success: false, detail: resText || `Server returned error (${res.status})` };
+      }
       if (res.ok && data.success) {
         if (data.job_id) {
           showNotification(`File accepted (${data.total_rows?.toLocaleString() || "large"} rows). Ingesting in background!`, "success");

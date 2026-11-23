@@ -620,7 +620,13 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
         method: "POST",
         body: formData
       });
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        data = { success: false, detail: resText || `Server returned error (${res.status})` };
+      }
       if (res.ok && data.success) {
         if (data.job_id) {
           setActiveImportJob({
