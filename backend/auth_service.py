@@ -9,13 +9,47 @@ import base64
 import hmac
 import hashlib
 import secrets
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from config import config
 from supabase_client import supabase
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "smartflo-telecom-auth-secret-key-2026-prod")
-TOKEN_EXPIRY_DAYS = 7
+def _get_jwt_secret() -> str:
+    env_secret = os.environ.get("JWT_SECRET")
+    if env_secret and len(env_secret.strip()) >= 16:
+        return env_secret.strip()
+
+    secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".jwt_secret")
+    try:
+        if os.path.exists(secret_file):
+            with open(secret_file, "r") as f:
+                s = f.read().strip()
+                if len(s) >= 32:
+                    return s
+    except Exception:
+        pass
+
+    new_secret = secrets.token_hex(32)
+    try:
+        with open(secret_file, "w") as f:
+            f.write(new_secret)
+    except Exception:
+        pass
+    return new_secret
+
+JWT_SECRET = _get_jwt_secret()
+TOKEN_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "24"))
+
+def validate_password_strength(password: str) -> Tuple[bool, str]:
+    """Enforces enterprise password requirements: min 8 characters with letters and numbers."""
+    if not password or len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if not any(c.isalpha() for c in password):
+        return False, "Password must contain at least one letter."
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one number."
+    return True, ""
 
 def hash_password(password: str) -> str:
     """Hashes password using PBKDF2-HMAC-SHA256 with random 16-byte salt (100,000 rounds)."""
@@ -50,7 +84,7 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     """Generates standard Base64URL HS256 JWT access token."""
     header = {"alg": "HS256", "typ": "JWT"}
     now = datetime.now(timezone.utc)
-    exp = now + (expires_delta or timedelta(days=TOKEN_EXPIRY_DAYS))
+    exp = now + (expires_delta or timedelta(hours=TOKEN_EXPIRY_HOURS))
     
     payload = dict(data)
     payload["iat"] = int(now.timestamp())
@@ -90,13 +124,47 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 class AuthService:
+    _failed_attempts: Dict[str, List[float]] = {}
+
+    def check_login_rate_limit(self, email: str, ip: str) -> Tuple[bool, int]:
+        """
+        Enforces maximum 5 failed login attempts per 15-minute window per IP or email.
+        Returns (is_locked, remaining_lockout_seconds).
+        """
+        now = time.time()
+        window = 900  # 15 minutes lockout window
+        max_attempts = 5
+
+        for key in [f"email:{email.strip().lower()}", f"ip:{ip}"]:
+            attempts = [t for t in self._failed_attempts.get(key, []) if now - t < window]
+            self._failed_attempts[key] = attempts
+            if len(attempts) >= max_attempts:
+                oldest = attempts[0]
+                remaining = int(window - (now - oldest))
+                return True, max(1, remaining)
+        return False, 0
+
+    def record_failed_attempt(self, email: str, ip: str) -> None:
+        """Records a timestamped failed login attempt for both the target email and source IP."""
+        now = time.time()
+        for key in [f"email:{email.strip().lower()}", f"ip:{ip}"]:
+            attempts = self._failed_attempts.get(key, [])
+            attempts.append(now)
+            self._failed_attempts[key] = attempts
+
+    def reset_failed_attempts(self, email: str, ip: str) -> None:
+        """Clears failed login attempts upon successful credential verification."""
+        for key in [f"email:{email.strip().lower()}", f"ip:{ip}"]:
+            self._failed_attempts.pop(key, None)
+
     def init_default_superadmin(self) -> None:
         """Seeds initial default superadmin if no users exist in app_users."""
         try:
             users = supabase.select("app_users", {"role": "eq.superadmin", "limit": 1})
             if not users:
                 default_email = os.environ.get("INITIAL_SUPERADMIN_EMAIL", "admin@smartflo.ai")
-                default_password = os.environ.get("INITIAL_SUPERADMIN_PASSWORD", "admin12345")
+                # Generate cryptographically secure random password if not explicitly configured in env
+                default_password = os.environ.get("INITIAL_SUPERADMIN_PASSWORD") or secrets.token_urlsafe(16)
                 default_name = "System Superadmin"
                 
                 payload = {
@@ -107,7 +175,9 @@ class AuthService:
                     "is_active": True
                 }
                 supabase.insert("app_users", payload)
-                print(f"[Auth] Seeded initial Superadmin account: {default_email}")
+                print(f"[Auth Security] Seeded initial Superadmin account: {default_email}")
+                if not os.environ.get("INITIAL_SUPERADMIN_PASSWORD"):
+                    print(f"[Auth Security] Generated initial password: {default_password} (Please change immediately upon first login!)")
         except Exception as e:
             print(f"[Auth] Notice during default superadmin check: {e}")
 
@@ -157,8 +227,9 @@ class AuthService:
         if existing:
             return False, "A user with this email address already exists.", None
 
-        if len(password) < 6:
-            return False, "Password must be at least 6 characters.", None
+        is_strong, pwd_err = validate_password_strength(password)
+        if not is_strong:
+            return False, pwd_err, None
 
         payload = {
             "email": clean_email,
@@ -190,8 +261,9 @@ class AuthService:
             payload["is_active"] = bool(updates["is_active"])
 
         if "password" in updates and updates["password"]:
-            if len(str(updates["password"])) < 6:
-                return False, "Password must be at least 6 characters."
+            is_strong, pwd_err = validate_password_strength(str(updates["password"]))
+            if not is_strong:
+                return False, pwd_err
             payload["password_hash"] = hash_password(str(updates["password"]))
 
         ok = supabase.update("app_users", {"id": user_id}, payload)
@@ -213,8 +285,9 @@ class AuthService:
         if not verify_password(current_password, user.get("password_hash", "")):
             return False, "Incorrect current password."
 
-        if len(new_password) < 6:
-            return False, "New password must be at least 6 characters."
+        is_strong, pwd_err = validate_password_strength(new_password)
+        if not is_strong:
+            return False, pwd_err
 
         payload = {
             "password_hash": hash_password(new_password),

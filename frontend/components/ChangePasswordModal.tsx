@@ -23,8 +23,12 @@ export default function ChangePasswordModal({ isOpen, onClose, apiBase }: Change
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newPassword.length < 6) {
-      setError("New password must be at least 6 characters.");
+    if (newPassword.length < 8) {
+      setError("New password must be at least 8 characters long.");
+      return;
+    }
+    if (!/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setError("Password must contain at least one letter and one number.");
       return;
     }
     if (newPassword !== confirmPassword) {

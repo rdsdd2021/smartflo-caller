@@ -122,6 +122,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Enforces enterprise security headers across all HTTP responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     traceback.print_exc()
@@ -148,10 +158,19 @@ def health_check():
 # -------------------------------------------------------------
 security_bearer = HTTPBearer(auto_error=False)
 
-def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)) -> Dict[str, Any]:
-    if not credentials or not credentials.credentials:
+def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)
+) -> Dict[str, Any]:
+    raw_token = None
+    if credentials and credentials.credentials:
+        raw_token = credentials.credentials
+    elif "smartflo_token" in request.cookies:
+        raw_token = request.cookies.get("smartflo_token")
+
+    if not raw_token:
         raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(raw_token)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Session expired or invalid. Please log in again.")
     user = auth_service.get_user_by_id(payload["sub"])
@@ -179,10 +198,24 @@ async def on_app_startup():
         print(f"[Startup] Ingestion event loop init notice: {e}")
 
 @app.post("/api/auth/login", tags=["Authentication & Team"], summary="Authenticate User")
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    # Enforce brute-force lockout protection (5 failed attempts per 15-minute window)
+    is_locked, remaining_sec = auth_service.check_login_rate_limit(payload.email, client_ip)
+    if is_locked:
+        mins = max(1, remaining_sec // 60)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts. Security lock active. Please retry in {mins} minute(s)."
+        )
+
     user = auth_service.authenticate(payload.email, payload.password)
     if not user:
+        auth_service.record_failed_attempt(payload.email, client_ip)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    # Successful authentication: clear previous failed attempts
+    auth_service.reset_failed_attempts(payload.email, client_ip)
     token = create_access_token({"sub": user["id"], "email": user["email"], "role": user["role"]})
     return {
         "success": True,
