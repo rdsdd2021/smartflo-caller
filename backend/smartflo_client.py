@@ -48,13 +48,14 @@ class SmartfloClient:
             "Content-Type": "application/json"
         }
 
-    def initiate_call(self, customer_number: str, caller_id: Optional[str] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+    def initiate_call(self, customer_number: str, caller_id: Optional[str] = None, api_key: Optional[str] = None, call_timeout: Optional[int] = None) -> Dict[str, Any]:
         """
         Triggers outbound Click-to-Call Support to customer with specified or rotated DID
         and specific campaign routing API key.
         """
         selected_did = caller_id or config.single_did
         selected_api_key = api_key or config.smartflo_api_key
+        actual_call_timeout = call_timeout or config.call_timeout
         url = f"{self.BASE_URL}/v1/click_to_call_support"
         payload = {
             "customer_number": customer_number,
@@ -62,7 +63,7 @@ class SmartfloClient:
             "caller_id": selected_did,
             "async": 1,
             "customer_ring_timeout": config.customer_ring_timeout,
-            "call_timeout": config.call_timeout
+            "call_timeout": actual_call_timeout
         }
         
         try:

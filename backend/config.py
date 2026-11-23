@@ -31,7 +31,7 @@ class AppConfig(BaseModel):
     concurrency: int = 15
     inter_call_delay: int = 3
     customer_ring_timeout: int = 30
-    call_timeout: int = 180
+    call_timeout: int = int(os.environ.get("CALL_TIMEOUT", "1800"))  # 30 mins default (1800s) instead of 180s
     
     # Active IVR
     ivr_id: str = "89733"
