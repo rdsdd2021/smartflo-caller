@@ -373,7 +373,7 @@ def get_custom_fields():
 def get_field_distinct_values(
     field: str = Query(...),
     search: Optional[str] = Query(None),
-    limit: int = Query(500, ge=1, le=2000)
+    limit: int = Query(2000, ge=1, le=5000)
 ):
     return {
         "field": field,

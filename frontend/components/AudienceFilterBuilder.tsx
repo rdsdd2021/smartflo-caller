@@ -341,7 +341,7 @@ export default function AudienceFilterBuilder({
     if (fieldValuesCache[fieldKey] || loadingFieldValues[fieldKey]) return;
     setLoadingFieldValues((prev) => ({ ...prev, [fieldKey]: true }));
     try {
-      const res = await fetch(`${apiBase}/contacts/field-values?field=${encodeURIComponent(fieldKey)}`);
+      const res = await fetch(`${apiBase}/contacts/field-values?field=${encodeURIComponent(fieldKey)}&limit=2000`);
       if (res.ok) {
         const data = await res.json();
         setFieldValuesCache((prev) => ({ ...prev, [fieldKey]: data.values || [] }));

@@ -183,7 +183,7 @@ class ContactsService:
     def get_distinct_field_values(
         self,
         field_key: str,
-        limit: int = 500,
+        limit: int = 2000,
         search: Optional[str] = None
     ) -> List[str]:
         """Dynamically fetches distinct existing values for any contact field or JSONB attribute with in-memory caching."""
@@ -217,18 +217,24 @@ class ContactsService:
         # 2. Query distinct values from actual database rows
         try:
             if field_key in self.STANDARD_COLUMNS:
-                params = {
-                    "select": field_key,
-                    "limit": min(1000, limit * 3),
-                    f"{field_key}": "not.is.null"
-                }
-                if search:
-                    params[f"{field_key}"] = f"ilike.*{search}*"
-                rows = supabase.select("contacts", params)
-                for r in rows:
-                    v = r.get(field_key)
-                    if v is not None and str(v).strip():
-                        values_set.add(str(v).strip())
+                for offset in range(0, 6000, 1000):
+                    params = {
+                        "select": field_key,
+                        "limit": 1000,
+                        "offset": offset,
+                        f"{field_key}": "not.is.null"
+                    }
+                    if search:
+                        params[f"{field_key}"] = f"ilike.*{search}*"
+                    rows = supabase.select("contacts", params)
+                    if not rows:
+                        break
+                    for r in rows:
+                        v = r.get(field_key)
+                        if v is not None and str(v).strip():
+                            values_set.add(str(v).strip())
+                    if len(values_set) >= limit or len(rows) < 1000:
+                        break
             else:
                 # Target the exact JSONB property directly without pulling full objects
                 params = {
@@ -239,8 +245,8 @@ class ContactsService:
                 if search:
                     params[f"attributes->>{field_key}"] = f"ilike.*{search}*"
 
-                # Page through up to 3 batches (up to 3,000 candidate contacts) to discover diverse values
-                for offset in [0, 1000, 2000]:
+                # Page through up to 8 batches (up to 8,000 candidate contacts) to discover diverse values
+                for offset in range(0, 8000, 1000):
                     params["offset"] = offset
                     rows = supabase.select("contacts", params)
                     if not rows:
