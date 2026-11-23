@@ -729,23 +729,23 @@ class ContactsService:
         except Exception as e:
             print(f"[Supabase] campaign upsert notice: {e}")
 
-        # Fetch candidate contacts
+        # Fetch candidate contacts in 1,000-row batches (matching PostgREST max-rows cap)
         params = self._build_postgrest_filters(filter_rules)
         params["select"] = "id,phone_number,name,last_call_status,last_call_time,attributes"
         offset = 0
-        limit = 2000
+        batch_size = 1000
         raw_candidates: List[Dict[str, Any]] = []
 
         while True:
             params["offset"] = offset
-            params["limit"] = limit
+            params["limit"] = batch_size
             contacts = supabase.select("contacts", params)
             if not contacts:
                 break
             raw_candidates.extend(contacts)
-            if len(contacts) < limit:
+            if len(contacts) < batch_size:
                 break
-            offset += limit
+            offset += len(contacts)
 
         eligible_leads, skipped_leads, summary = self.evaluate_lead_eligibility(
             raw_candidates, campaign_id, policies
