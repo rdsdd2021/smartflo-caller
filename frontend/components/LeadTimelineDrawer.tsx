@@ -39,6 +39,7 @@ export default function LeadTimelineDrawer({
   const [loading, setLoading] = useState(true);
   const [contact, setContact] = useState<any | null>(null);
   const [timeline, setTimeline] = useState<any[]>([]);
+  const [customFields, setCustomFields] = useState<{ field_key: string; label: string; field_type?: string }[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editAttributes, setEditAttributes] = useState<Record<string, string>>({});
@@ -53,15 +54,25 @@ export default function LeadTimelineDrawer({
   const fetchTimeline = async () => {
     setLoading(true);
     try {
-      const idToFetch = contactId || phoneNumber;
-      const res = await fetch(`${apiBase}/contacts/${idToFetch}/timeline`);
+      const idToFetch = encodeURIComponent(contactId || phoneNumber || "");
+      const phoneParam = phoneNumber ? `?phone=${encodeURIComponent(phoneNumber)}` : "";
+      const res = await fetch(`${apiBase}/contacts/${idToFetch}/timeline${phoneParam}`);
       if (res.ok) {
         const data = await res.json();
         setContact(data.contact);
         setTimeline(data.timeline || []);
+        const cf = Array.isArray(data.custom_fields) ? data.custom_fields : [];
+        setCustomFields(cf);
         if (data.contact) {
           setEditName(data.contact.name || "");
-          setEditAttributes(data.contact.attributes || {});
+          const mergedAttrs: Record<string, string> = {};
+          cf.forEach((f: any) => {
+            mergedAttrs[f.field_key] = "";
+          });
+          Object.entries(data.contact.attributes || {}).forEach(([k, v]) => {
+            mergedAttrs[k] = v !== null && v !== undefined ? String(v) : "";
+          });
+          setEditAttributes(mergedAttrs);
         }
       }
     } catch (e) {
@@ -260,17 +271,43 @@ export default function LeadTimelineDrawer({
                         {timeline.length} call attempt{timeline.length === 1 ? "" : "s"}
                       </p>
                     </div>
-                    {contact?.attributes &&
-                      Object.entries(contact.attributes).map(([k, v]) => (
-                        <div key={k}>
+                    {(() => {
+                      const attrs = contact?.attributes || {};
+                      const renderedKeys = new Set<string>();
+                      const items: { key: string; label: string; value: any }[] = [];
+
+                      customFields.forEach((f) => {
+                        renderedKeys.add(f.field_key);
+                        items.push({
+                          key: f.field_key,
+                          label: f.label,
+                          value: attrs[f.field_key]
+                        });
+                      });
+
+                      Object.entries(attrs).forEach(([k, v]) => {
+                        if (!renderedKeys.has(k)) {
+                          items.push({
+                            key: k,
+                            label: k.replace(/_/g, " "),
+                            value: v
+                          });
+                        }
+                      });
+
+                      return items.map((item) => (
+                        <div key={item.key}>
                           <span className="text-[10px] font-semibold text-slate-400 uppercase block">
-                            {k.replace(/_/g, " ")}
+                            {item.label}
                           </span>
-                          <p className="text-xs font-medium text-slate-800 mt-0.5">
-                            {v !== null && v !== undefined && String(v).trim() ? String(v) : "—"}
+                          <p className="text-xs font-medium text-slate-800 mt-0.5 break-words">
+                            {item.value !== null && item.value !== undefined && String(item.value).trim()
+                              ? String(item.value)
+                              : "—"}
                           </p>
                         </div>
-                      ))}
+                      ));
+                    })()}
                   </div>
                 )}
               </div>

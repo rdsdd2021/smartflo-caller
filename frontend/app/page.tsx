@@ -3709,7 +3709,10 @@ export default function SmartfloDialerApp() {
                               )}
                               <td className="py-2.5 px-3 text-right">
                                 <button
-                                  onClick={() => handleDeleteLead(lead.id, lead.phone_number)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteLead(lead.id, lead.phone_number);
+                                  }}
                                   className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
                                   title={`Remove ${lead.phone_number}`}
                                 >

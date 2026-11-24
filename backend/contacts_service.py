@@ -429,26 +429,89 @@ class ContactsService:
             "total_pages": total_pages
         }
 
-    def get_contact_timeline(self, contact_id: str) -> Dict[str, Any]:
-        """Fetches full contact profile and chronological lifetime call history."""
-        # 1. Contact profile
-        contact = supabase.select_one("contacts", {"id": contact_id})
-        if not contact:
-            # Try by phone
+    def get_contact_timeline(self, contact_id: str, phone: Optional[str] = None) -> Dict[str, Any]:
+        """Fetches full contact profile, custom fields schema, and chronological lifetime call history."""
+        contact = None
+        # 1. Contact profile (only query UUID column if contact_id looks like a UUID)
+        if contact_id and len(contact_id) == 36 and "-" in contact_id:
+            contact = supabase.select_one("contacts", {"id": contact_id})
+
+        lookup_phone = sanitize_phone(phone or "") or (sanitize_phone(contact_id) if contact_id and not contact_id.startswith("lead_") else None)
+        if not contact and lookup_phone:
+            contact = supabase.select_one("contacts", {"phone_number": lookup_phone})
+        if not contact and contact_id and not contact_id.startswith("lead_"):
             contact = supabase.select_one("contacts", {"phone_number": contact_id})
+
+        # Fallback: if contact is not in Supabase yet, check SQLite leads table
+        sqlite_calls = []
+        target_phone = (contact.get("phone_number") if contact else None) or lookup_phone
+        try:
+            import database
+            with database.get_connection() as conn:
+                if not contact and contact_id and contact_id.startswith("lead_"):
+                    row = conn.execute("SELECT * FROM leads WHERE id = ?", (contact_id,)).fetchone()
+                    if row:
+                        row_d = dict(row)
+                        target_phone = target_phone or row_d.get("phone_number")
+                        contact = {
+                            "id": None,
+                            "phone_number": row_d.get("phone_number"),
+                            "name": row_d.get("name"),
+                            "attributes": {}
+                        }
+                if target_phone:
+                    rows = conn.execute("""
+                        SELECT l.*, c.name as campaign_name
+                        FROM leads l
+                        LEFT JOIN campaigns c ON l.campaign_id = c.id
+                        WHERE l.phone_number = ? AND l.status != 'pending'
+                        ORDER BY COALESCE(l.call_time, l.created_at) DESC
+                    """, (target_phone,)).fetchall()
+                    for r in rows:
+                        rd = dict(r)
+                        sqlite_calls.append({
+                            "id": rd.get("id"),
+                            "campaign_id": rd.get("campaign_id"),
+                            "campaign_name": rd.get("campaign_name"),
+                            "status": rd.get("status"),
+                            "duration": rd.get("duration") or 0,
+                            "dtmf": rd.get("dtmf"),
+                            "caller_did": rd.get("did_used"),
+                            "call_time": rd.get("call_time") or rd.get("created_at")
+                        })
+        except Exception as e:
+            print(f"[ContactsService] SQLite timeline fallback notice: {e}")
+
+        custom_fields = [
+            {
+                "field_key": f["field_key"],
+                "label": f.get("label") or f["field_key"].replace("_", " ").title(),
+                "field_type": f.get("field_type") or "text",
+            }
+            for f in self.get_all_filter_fields()
+            if not f.get("is_standard", False)
+        ]
+
         if not contact:
-            return {"contact": None, "timeline": []}
+            return {"contact": None, "timeline": sqlite_calls, "custom_fields": custom_fields}
 
         # 2. Chronological call logs across all campaigns
-        phone = contact.get("phone_number")
-        logs = supabase.select(
-            "call_logs",
-            {"phone_number": f"eq.{phone}", "order": "call_time.desc"}
-        )
+        phone_val = contact.get("phone_number") or target_phone
+        logs = []
+        if phone_val:
+            logs = supabase.select(
+                "call_logs",
+                {"phone_number": f"eq.{phone_val}", "order": "call_time.desc"}
+            ) or []
+
+        # Merge any SQLite campaign calls not already represented in Supabase call_logs
+        if sqlite_calls and not logs:
+            logs = sqlite_calls
 
         return {
             "contact": contact,
-            "timeline": logs or []
+            "timeline": logs,
+            "custom_fields": custom_fields
         }
 
     def update_contact(self, contact_id: str, updates: Dict[str, Any]) -> bool:

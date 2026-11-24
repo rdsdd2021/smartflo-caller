@@ -515,8 +515,8 @@ def list_contacts(
     return contacts_service.get_paginated_contacts(page=page, page_size=limit, search=search, filter_rules=filter_rules)
 
 @app.get("/api/contacts/{contact_id}/timeline", tags=["Contacts CRM"], summary="Get Lifetime Call History Timeline")
-def get_contact_timeline(contact_id: str):
-    return contacts_service.get_contact_timeline(contact_id)
+def get_contact_timeline(contact_id: str, phone: Optional[str] = Query(None)):
+    return contacts_service.get_contact_timeline(contact_id, phone=phone)
 
 @app.post("/api/contacts", tags=["Contacts CRM"], summary="Create Single Contact")
 def create_contact(payload: CreateContactRequest):
