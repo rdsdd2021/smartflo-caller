@@ -859,4 +859,59 @@ class ContactsService:
 
         return summary
 
+    def enrich_leads_with_attributes(self, records: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Enriches campaign lead dictionaries with Master Contacts CRM JSONB attributes
+        and returns (enriched_records, custom_fields_schema).
+        """
+        all_fields = self.get_all_filter_fields()
+        custom_fields = [
+            {
+                "field_key": f["field_key"],
+                "label": f.get("label") or f["field_key"].replace("_", " ").title(),
+                "field_type": f.get("field_type") or "text",
+            }
+            for f in all_fields
+            if not f.get("is_standard", False)
+        ]
+
+        if not records:
+            return records, custom_fields
+
+        unique_phones = list({str(r.get("phone_number") or "").strip() for r in records if r.get("phone_number")})
+        attr_map: Dict[str, Dict[str, Any]] = {}
+
+        # Batch fetch attributes from Supabase in chunks of 150 to stay well under URL length limits
+        batch_size = 150
+        for i in range(0, len(unique_phones), batch_size):
+            batch = unique_phones[i : i + batch_size]
+            try:
+                rows = supabase.select("contacts", {
+                    "select": "phone_number,attributes",
+                    "phone_number": f"in.({','.join(batch)})",
+                    "limit": batch_size
+                })
+                for row in rows:
+                    p = str(row.get("phone_number") or "").strip()
+                    if p:
+                        attr_map[p] = row.get("attributes") or {}
+            except Exception as e:
+                print(f"[ContactsService] Error enriching leads attributes: {e}")
+
+        known_keys = {f["field_key"] for f in custom_fields}
+        for r in records:
+            p = str(r.get("phone_number") or "").strip()
+            attrs = attr_map.get(p, {})
+            r["attributes"] = attrs
+            for k in attrs.keys():
+                if k not in known_keys:
+                    known_keys.add(k)
+                    custom_fields.append({
+                        "field_key": k,
+                        "label": k.replace("_", " ").title(),
+                        "field_type": "text",
+                    })
+
+        return records, custom_fields
+
 contacts_service = ContactsService()

@@ -4,7 +4,7 @@ import csv
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from config import config
 from models import Lead
 
@@ -55,15 +55,23 @@ def log_lead_to_excel(lead: Lead):
     ws.append(row_data)
     wb.save(config.excel_file)
 
-def export_records_to_excel_bytes(records: List[dict], campaign_name: str = "Campaign") -> io.BytesIO:
-    """Exports a list of database lead dictionaries to a styled Excel file."""
+def export_records_to_excel_bytes(
+    records: List[dict],
+    campaign_name: str = "Campaign",
+    custom_fields: Optional[List[dict]] = None
+) -> io.BytesIO:
+    """Exports a list of database lead dictionaries (including dynamic custom fields) to a styled Excel file."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Call Results"
-    
-    headers = [
+
+    custom_fields = custom_fields or []
+    base_headers = [
         "Customer Number",
         "Name",
+    ]
+    custom_headers = [f.get("label") or f.get("field_key", "") for f in custom_fields]
+    tail_headers = [
         "Call Status",
         "DTMF Button Pressed",
         "Talk Duration (sec)",
@@ -73,8 +81,9 @@ def export_records_to_excel_bytes(records: List[dict], campaign_name: str = "Cam
         "Smartflo Ref ID",
         "Notes / Error"
     ]
+    headers = base_headers + custom_headers + tail_headers
     ws.append(headers)
-    
+
     header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
     header_font = Font(name="Segoe UI", size=11, bold=True, color="38BDF8")
     for col_idx in range(1, len(headers) + 1):
@@ -83,11 +92,17 @@ def export_records_to_excel_bytes(records: List[dict], campaign_name: str = "Cam
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 22
-        
+
     for r in records:
+        attrs = r.get("attributes") or {}
+        custom_vals = [
+            str(attrs.get(f["field_key"], "") if attrs.get(f["field_key"]) is not None else "")
+            for f in custom_fields
+        ]
         ws.append([
             r.get("phone_number", ""),
             r.get("name", "") or "",
+        ] + custom_vals + [
             r.get("status", "").upper(),
             str(r.get("dtmf") if r.get("dtmf") is not None else "No Input"),
             r.get("duration", 0),
@@ -97,41 +112,55 @@ def export_records_to_excel_bytes(records: List[dict], campaign_name: str = "Cam
             r.get("ref_id", "") or "",
             r.get("error_message", "") or ""
         ])
-        
+
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
-def export_records_to_csv_string(records: List[dict]) -> str:
-    """Exports a list of database lead dictionaries to CSV string."""
+def export_records_to_csv_string(records: List[dict], custom_fields: Optional[List[dict]] = None) -> str:
+    """Exports a list of database lead dictionaries (including dynamic custom fields) to CSV string."""
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "Phone Number",
-        "Name",
-        "Status",
-        "DTMF Pressed",
-        "Talk Duration (s)",
-        "Caller ID (DID)",
-        "Call Time",
-        "Smartflo Call ID",
-        "Smartflo Ref ID",
-        "Notes"
-    ])
+    custom_fields = custom_fields or []
+    custom_headers = [f.get("label") or f.get("field_key", "") for f in custom_fields]
+    writer.writerow(
+        ["Phone Number", "Name"]
+        + custom_headers
+        + [
+            "Status",
+            "DTMF Pressed",
+            "Talk Duration (s)",
+            "Caller ID (DID)",
+            "Call Time",
+            "Smartflo Call ID",
+            "Smartflo Ref ID",
+            "Notes"
+        ]
+    )
     for r in records:
-        writer.writerow([
-            r.get("phone_number", ""),
-            r.get("name", "") or "",
-            r.get("status", "").upper(),
-            str(r.get("dtmf") if r.get("dtmf") is not None else "No Input"),
-            r.get("duration", 0),
-            r.get("did_used", "") or "",
-            r.get("call_time", "") or "",
-            r.get("call_id", "") or "",
-            r.get("ref_id", "") or "",
-            r.get("error_message", "") or ""
-        ])
+        attrs = r.get("attributes") or {}
+        custom_vals = [
+            str(attrs.get(f["field_key"], "") if attrs.get(f["field_key"]) is not None else "")
+            for f in custom_fields
+        ]
+        writer.writerow(
+            [
+                r.get("phone_number", ""),
+                r.get("name", "") or "",
+            ]
+            + custom_vals
+            + [
+                r.get("status", "").upper(),
+                str(r.get("dtmf") if r.get("dtmf") is not None else "No Input"),
+                r.get("duration", 0),
+                r.get("did_used", "") or "",
+                r.get("call_time", "") or "",
+                r.get("call_id", "") or "",
+                r.get("ref_id", "") or "",
+                r.get("error_message", "") or ""
+            ]
+        )
     return output.getvalue()
 
 def export_queue_to_excel_bytes(leads: List[Lead]) -> io.BytesIO:

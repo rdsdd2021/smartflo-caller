@@ -881,7 +881,10 @@ def get_paginated_leads(
         search=search,
         dtmf_filter=dtmf
     )
-    res["leads"] = res["items"]
+    enriched_items, custom_fields = contacts_service.enrich_leads_with_attributes(res["items"])
+    res["items"] = enriched_items
+    res["leads"] = enriched_items
+    res["custom_fields"] = custom_fields
     return res
 
 # -------------------------------------------------------------
@@ -1116,17 +1119,18 @@ def export_campaign_report(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     records = database.get_leads_for_export(campaign_id, status_filter=status, dtmf_filter=dtmf)
+    records, custom_fields = contacts_service.enrich_leads_with_attributes(records)
     safe_name = "".join(c for c in camp["name"] if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
 
     if format == "csv":
-        csv_data = export_records_to_csv_string(records)
+        csv_data = export_records_to_csv_string(records, custom_fields=custom_fields)
         return Response(
             content=csv_data,
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename={safe_name}_results.csv"}
         )
     else:
-        excel_bytes = export_records_to_excel_bytes(records, campaign_name=camp["name"])
+        excel_bytes = export_records_to_excel_bytes(records, campaign_name=camp["name"], custom_fields=custom_fields)
         return StreamingResponse(
             excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

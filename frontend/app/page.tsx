@@ -140,6 +140,7 @@ interface LeadItem {
   call_time?: string;
   did_used?: string;
   error_message?: string;
+  attributes?: Record<string, any>;
 }
 
 interface TrunkStatus {
@@ -313,6 +314,7 @@ export default function SmartfloDialerApp() {
 
   // Paginated Leads Table
   const [leadsList, setLeadsList] = useState<LeadItem[]>([]);
+  const [leadCustomFields, setLeadCustomFields] = useState<{ field_key: string; label: string; field_type?: string }[]>([]);
   const [leadsPage, setLeadsPage] = useState(1);
   const [leadsPageSize, setLeadsPageSize] = useState(50);
   const [leadsTotalCount, setLeadsTotalCount] = useState(0);
@@ -577,6 +579,9 @@ export default function SmartfloDialerApp() {
         if (selectedCampaignIdRef.current !== cid) return;
         const items = data.items || data.leads || [];
         setLeadsList(items);
+        if (Array.isArray(data.custom_fields)) {
+          setLeadCustomFields(data.custom_fields);
+        }
         setLeadsTotalCount(data.total_count ?? items.length);
         setLeadsTotalPages(data.total_pages ?? Math.max(1, Math.ceil((data.total_count ?? items.length) / pageSize)));
       }
@@ -3186,6 +3191,11 @@ export default function SmartfloDialerApp() {
                           <th className="py-2.5 px-3">#</th>
                           <th className="py-2.5 px-3">Phone Number</th>
                           <th className="py-2.5 px-3">Name</th>
+                          {leadCustomFields.map((f) => (
+                            <th key={f.field_key} className="py-2.5 px-3 whitespace-nowrap">
+                              {f.label}
+                            </th>
+                          ))}
                           <th className="py-2.5 px-3">Status</th>
                           <th className="py-2.5 px-3">Talk Duration</th>
                           <th className="py-2.5 px-3">DTMF Key</th>
@@ -3197,7 +3207,7 @@ export default function SmartfloDialerApp() {
                       <tbody className="divide-y divide-slate-100">
                         {leadsList.length === 0 ? (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-slate-400">
+                            <td colSpan={9 + leadCustomFields.length} className="py-8 text-center text-slate-400">
                               No leads found. Use the import options above to add data.
                             </td>
                           </tr>
@@ -3215,12 +3225,35 @@ export default function SmartfloDialerApp() {
                               <td className="py-2.5 px-3 text-slate-400 font-mono">
                                 {(leadsPage - 1) * leadsPageSize + idx + 1}
                               </td>
-                              <td className="py-2.5 px-3 font-mono font-medium text-slate-900">
+                              <td className="py-2.5 px-3 font-mono font-medium text-slate-900 whitespace-nowrap">
                                 {lead.phone_number}
                               </td>
-                              <td className="py-2.5 px-3 text-slate-600">
+                              <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
                                 {lead.name || "—"}
                               </td>
+                              {leadCustomFields.map((f) => {
+                                const val = lead.attributes?.[f.field_key];
+                                const hasVal = val !== undefined && val !== null && String(val).trim() !== "";
+                                return (
+                                  <td
+                                    key={f.field_key}
+                                    className="py-2.5 px-3 text-slate-600 max-w-[180px] truncate"
+                                    title={hasVal ? String(val) : ""}
+                                  >
+                                    {hasVal ? (
+                                      f.field_type === "select" ? (
+                                        <span className="inline-block bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] font-medium truncate">
+                                          {String(val)}
+                                        </span>
+                                      ) : (
+                                        <span className="truncate">{String(val)}</span>
+                                      )
+                                    ) : (
+                                      <span className="text-slate-300">—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
                               <td className="py-2.5 px-3">
                                 {(() => {
                                   const s = (lead.status || "").toLowerCase();

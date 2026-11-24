@@ -201,6 +201,7 @@ class UpdateCampaignRequest(BaseModel):
 class PaginatedLeadsResponse(BaseModel):
     items: List[Dict[str, Any]]
     leads: Optional[List[Dict[str, Any]]] = None
+    custom_fields: Optional[List[Dict[str, Any]]] = None
     total_count: int
     page: int
     limit: int
