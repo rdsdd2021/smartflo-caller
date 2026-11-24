@@ -51,7 +51,8 @@ import {
   X,
   Check,
   Webhook,
-  FileCode
+  FileCode,
+  EyeOff
 } from "lucide-react";
 import { useAuth } from "../components/AuthContext";
 import UserManagementModal from "../components/UserManagementModal";
@@ -315,6 +316,19 @@ export default function SmartfloDialerApp() {
   // Paginated Leads Table
   const [leadsList, setLeadsList] = useState<LeadItem[]>([]);
   const [leadCustomFields, setLeadCustomFields] = useState<{ field_key: string; label: string; field_type?: string }[]>([]);
+  const [leadVisibleColumns, setLeadVisibleColumns] = useState<string[]>([
+    "phone_number",
+    "name",
+    "status",
+    "duration",
+    "dtmf",
+    "did_used",
+    "call_time"
+  ]);
+  const [leadColsInitialized, setLeadColsInitialized] = useState(false);
+  const [isLeadColumnsDropdownOpen, setIsLeadColumnsDropdownOpen] = useState(false);
+  const [leadColumnSearch, setLeadColumnSearch] = useState("");
+  const leadColumnsDropdownRef = useRef<HTMLDivElement>(null);
   const [leadsPage, setLeadsPage] = useState(1);
   const [leadsPageSize, setLeadsPageSize] = useState(50);
   const [leadsTotalCount, setLeadsTotalCount] = useState(0);
@@ -581,10 +595,117 @@ export default function SmartfloDialerApp() {
         setLeadsList(items);
         if (Array.isArray(data.custom_fields)) {
           setLeadCustomFields(data.custom_fields);
+          if (!leadColsInitialized) {
+            setLeadColsInitialized(true);
+            try {
+              const saved = localStorage.getItem("campaign_leads_visible_columns");
+              if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  setLeadVisibleColumns(parsed);
+                } else {
+                  setLeadVisibleColumns([
+                    "phone_number",
+                    "name",
+                    ...data.custom_fields.map((f: any) => f.field_key),
+                    "status",
+                    "duration",
+                    "dtmf",
+                    "did_used",
+                    "call_time"
+                  ]);
+                }
+              } else {
+                setLeadVisibleColumns([
+                  "phone_number",
+                  "name",
+                  ...data.custom_fields.map((f: any) => f.field_key),
+                  "status",
+                  "duration",
+                  "dtmf",
+                  "did_used",
+                  "call_time"
+                ]);
+              }
+            } catch {
+              setLeadVisibleColumns([
+                "phone_number",
+                "name",
+                ...data.custom_fields.map((f: any) => f.field_key),
+                "status",
+                "duration",
+                "dtmf",
+                "did_used",
+                "call_time"
+              ]);
+            }
+          }
         }
         setLeadsTotalCount(data.total_count ?? items.length);
         setLeadsTotalPages(data.total_pages ?? Math.max(1, Math.ceil((data.total_count ?? items.length) / pageSize)));
       }
+    } catch {}
+  };
+
+  useEffect(() => {
+    function handleClickOutsideLeadCols(event: MouseEvent) {
+      if (leadColumnsDropdownRef.current && !leadColumnsDropdownRef.current.contains(event.target as Node)) {
+        setIsLeadColumnsDropdownOpen(false);
+      }
+    }
+    if (isLeadColumnsDropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutsideLeadCols);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutsideLeadCols);
+  }, [isLeadColumnsDropdownOpen]);
+
+  const toggleLeadColumn = (colKey: string) => {
+    setLeadVisibleColumns((prev) => {
+      let updated: string[];
+      if (prev.includes(colKey)) {
+        if (prev.length <= 1) return prev;
+        updated = prev.filter((k) => k !== colKey);
+      } else {
+        updated = [...prev, colKey];
+      }
+      try {
+        localStorage.setItem("campaign_leads_visible_columns", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  };
+
+  const showAllLeadColumns = () => {
+    const all = [
+      "phone_number",
+      "name",
+      ...leadCustomFields.map((f) => f.field_key),
+      "status",
+      "duration",
+      "dtmf",
+      "did_used",
+      "call_time"
+    ];
+    setLeadVisibleColumns(all);
+    try {
+      localStorage.setItem("campaign_leads_visible_columns", JSON.stringify(all));
+    } catch {}
+  };
+
+  const resetDefaultLeadColumns = () => {
+    const def = [
+      "phone_number",
+      "name",
+      ...leadCustomFields.slice(0, 4).map((f) => f.field_key),
+      "status",
+      "duration",
+      "dtmf",
+      "did_used",
+      "call_time"
+    ];
+    setLeadVisibleColumns(def);
+    try {
+      localStorage.setItem("campaign_leads_visible_columns", JSON.stringify(def));
     } catch {}
   };
 
@@ -3167,6 +3288,128 @@ export default function SmartfloDialerApp() {
                     </div>
 
                     <div className="flex items-center gap-2 text-xs text-slate-500">
+                      {/* Column Visibility Selector Dropdown */}
+                      <div className="relative" ref={leadColumnsDropdownRef}>
+                        <button
+                          type="button"
+                          onClick={() => setIsLeadColumnsDropdownOpen(!isLeadColumnsDropdownOpen)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
+                          title="Choose visible table headers"
+                        >
+                          <Sliders className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Columns ({leadVisibleColumns.length})</span>
+                          <ChevronDown className="w-3 h-3 text-slate-400" />
+                        </button>
+
+                        {isLeadColumnsDropdownOpen && (
+                          <div className="absolute right-0 mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-3 space-y-2.5 text-xs animate-in fade-in zoom-in-95 duration-100">
+                            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                              <span className="font-bold text-slate-900">Customize Table Headers</span>
+                              <div className="flex items-center gap-2 text-[11px]">
+                                <button
+                                  type="button"
+                                  onClick={showAllLeadColumns}
+                                  className="font-semibold text-indigo-600 hover:text-indigo-800"
+                                >
+                                  All
+                                </button>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={resetDefaultLeadColumns}
+                                  className="font-semibold text-slate-500 hover:text-slate-800"
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="relative">
+                              <Search className="w-3 h-3 text-slate-400 absolute left-2 top-2" />
+                              <input
+                                type="text"
+                                value={leadColumnSearch}
+                                onChange={(e) => setLeadColumnSearch(e.target.value)}
+                                placeholder="Find header..."
+                                className="w-full pl-7 pr-6 py-1 bg-slate-50 border border-slate-200 rounded text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-indigo-500"
+                              />
+                              {leadColumnSearch && (
+                                <button
+                                  type="button"
+                                  onClick={() => setLeadColumnSearch("")}
+                                  className="absolute right-1.5 top-1.5 text-slate-400"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                                Core Headers
+                              </span>
+                              {[
+                                { key: "phone_number", label: "Phone Number" },
+                                { key: "name", label: "Name" },
+                                { key: "status", label: "Status" },
+                                { key: "duration", label: "Talk Duration" },
+                                { key: "dtmf", label: "DTMF Key" },
+                                { key: "did_used", label: "Caller DID" },
+                                { key: "call_time", label: "Call Time" }
+                              ]
+                                .filter((col) => col.label.toLowerCase().includes(leadColumnSearch.toLowerCase()))
+                                .map((col) => (
+                                  <label
+                                    key={col.key}
+                                    className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer select-none text-slate-700"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={leadVisibleColumns.includes(col.key)}
+                                      onChange={() => toggleLeadColumn(col.key)}
+                                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                    />
+                                    <span className="font-medium">{col.label}</span>
+                                  </label>
+                                ))}
+
+                              {leadCustomFields.length > 0 && (
+                                <>
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block pt-2 mb-1">
+                                    Custom Datapoints
+                                  </span>
+                                  {leadCustomFields
+                                    .filter(
+                                      (f) =>
+                                        f.label.toLowerCase().includes(leadColumnSearch.toLowerCase()) ||
+                                        f.field_key.toLowerCase().includes(leadColumnSearch.toLowerCase())
+                                    )
+                                    .map((f) => (
+                                      <label
+                                        key={f.field_key}
+                                        className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer select-none text-slate-700"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={leadVisibleColumns.includes(f.field_key)}
+                                          onChange={() => toggleLeadColumn(f.field_key)}
+                                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                        />
+                                        <span className="font-medium truncate">{f.label}</span>
+                                        {f.field_type && (
+                                          <span className="text-[10px] text-slate-400 font-mono ml-auto">
+                                            {f.field_type}
+                                          </span>
+                                        )}
+                                      </label>
+                                    ))}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
                       <span>Show:</span>
                       <select
                         value={leadsPageSize}
@@ -3189,25 +3432,136 @@ export default function SmartfloDialerApp() {
                       <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                         <tr>
                           <th className="py-2.5 px-3">#</th>
-                          <th className="py-2.5 px-3">Phone Number</th>
-                          <th className="py-2.5 px-3">Name</th>
-                          {leadCustomFields.map((f) => (
-                            <th key={f.field_key} className="py-2.5 px-3 whitespace-nowrap">
-                              {f.label}
+                          {leadVisibleColumns.includes("phone_number") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Phone Number</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("phone_number")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Phone Number column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
                             </th>
-                          ))}
-                          <th className="py-2.5 px-3">Status</th>
-                          <th className="py-2.5 px-3">Talk Duration</th>
-                          <th className="py-2.5 px-3">DTMF Key</th>
-                          <th className="py-2.5 px-3">Caller DID</th>
-                          <th className="py-2.5 px-3">Call Time</th>
+                          )}
+                          {leadVisibleColumns.includes("name") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Name</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("name")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Name column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
+                          {leadCustomFields.map((f) => {
+                            if (!leadVisibleColumns.includes(f.field_key)) return null;
+                            return (
+                              <th key={f.field_key} className="py-2.5 px-3 whitespace-nowrap group">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{f.label}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleLeadColumn(f.field_key)}
+                                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                    title={`Hide "${f.label}" column`}
+                                  >
+                                    <EyeOff className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </th>
+                            );
+                          })}
+                          {leadVisibleColumns.includes("status") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Status</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("status")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Status column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
+                          {leadVisibleColumns.includes("duration") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Talk Duration</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("duration")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Talk Duration column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
+                          {leadVisibleColumns.includes("dtmf") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>DTMF Key</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("dtmf")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide DTMF Key column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
+                          {leadVisibleColumns.includes("did_used") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Caller DID</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("did_used")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Caller DID column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
+                          {leadVisibleColumns.includes("call_time") && (
+                            <th className="py-2.5 px-3 whitespace-nowrap group">
+                              <div className="flex items-center gap-1.5">
+                                <span>Call Time</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleLeadColumn("call_time")}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-600 transition-opacity"
+                                  title="Hide Call Time column"
+                                >
+                                  <EyeOff className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </th>
+                          )}
                           <th className="py-2.5 px-3 text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {leadsList.length === 0 ? (
                           <tr>
-                            <td colSpan={9 + leadCustomFields.length} className="py-8 text-center text-slate-400">
+                            <td colSpan={2 + leadVisibleColumns.length} className="py-8 text-center text-slate-400">
                               No leads found. Use the import options above to add data.
                             </td>
                           </tr>
@@ -3225,13 +3579,18 @@ export default function SmartfloDialerApp() {
                               <td className="py-2.5 px-3 text-slate-400 font-mono">
                                 {(leadsPage - 1) * leadsPageSize + idx + 1}
                               </td>
-                              <td className="py-2.5 px-3 font-mono font-medium text-slate-900 whitespace-nowrap">
-                                {lead.phone_number}
-                              </td>
-                              <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
-                                {lead.name || "—"}
-                              </td>
+                              {leadVisibleColumns.includes("phone_number") && (
+                                <td className="py-2.5 px-3 font-mono font-medium text-slate-900 whitespace-nowrap">
+                                  {lead.phone_number}
+                                </td>
+                              )}
+                              {leadVisibleColumns.includes("name") && (
+                                <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
+                                  {lead.name || "—"}
+                                </td>
+                              )}
                               {leadCustomFields.map((f) => {
+                                if (!leadVisibleColumns.includes(f.field_key)) return null;
                                 const val = lead.attributes?.[f.field_key];
                                 const hasVal = val !== undefined && val !== null && String(val).trim() !== "";
                                 return (
@@ -3254,7 +3613,8 @@ export default function SmartfloDialerApp() {
                                   </td>
                                 );
                               })}
-                              <td className="py-2.5 px-3">
+                              {leadVisibleColumns.includes("status") && (
+                                <td className="py-2.5 px-3">
                                 {(() => {
                                   const s = (lead.status || "").toLowerCase();
                                   if (s === "completed" || s === "answered") {
@@ -3319,25 +3679,34 @@ export default function SmartfloDialerApp() {
                                     </span>
                                   );
                                 })()}
-                              </td>
-                              <td className="py-2.5 px-3 font-mono text-slate-700">
-                                {lead.duration > 0 ? `${lead.duration}s` : "0s"}
-                              </td>
-                              <td className="py-2.5 px-3">
-                                {lead.dtmf !== null && lead.dtmf !== undefined ? (
-                                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold font-mono text-xs">
-                                    {lead.dtmf}
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-300">—</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px]">
-                                {lead.did_used ? `...${lead.did_used.slice(-4)}` : "—"}
-                              </td>
-                              <td className="py-2.5 px-3 text-slate-400 text-[11px]">
-                                {lead.call_time || "—"}
-                              </td>
+                                </td>
+                              )}
+                              {leadVisibleColumns.includes("duration") && (
+                                <td className="py-2.5 px-3 font-mono text-slate-700">
+                                  {lead.duration > 0 ? `${lead.duration}s` : "0s"}
+                                </td>
+                              )}
+                              {leadVisibleColumns.includes("dtmf") && (
+                                <td className="py-2.5 px-3">
+                                  {lead.dtmf !== null && lead.dtmf !== undefined ? (
+                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold font-mono text-xs">
+                                      {lead.dtmf}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-300">—</span>
+                                  )}
+                                </td>
+                              )}
+                              {leadVisibleColumns.includes("did_used") && (
+                                <td className="py-2.5 px-3 font-mono text-slate-500 text-[11px]">
+                                  {lead.did_used ? `...${lead.did_used.slice(-4)}` : "—"}
+                                </td>
+                              )}
+                              {leadVisibleColumns.includes("call_time") && (
+                                <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+                                  {lead.call_time || "—"}
+                                </td>
+                              )}
                               <td className="py-2.5 px-3 text-right">
                                 <button
                                   onClick={() => handleDeleteLead(lead.id, lead.phone_number)}
