@@ -51,6 +51,21 @@ class SupabaseClient:
 
     def upsert(self, table: str, data: Any, on_conflict: str = "id") -> Optional[List[Dict[str, Any]]]:
         """Upserts rows matching on the conflict column."""
+        # Deduplicate list by conflict key to avoid Postgres 21000 ("cannot affect row a second time")
+        if isinstance(data, list) and on_conflict:
+            dedup = {}
+            for row in data:
+                if isinstance(row, dict) and on_conflict in row:
+                    k = row[on_conflict]
+                    if k in dedup and "attributes" in row and isinstance(row.get("attributes"), dict):
+                        merged_attrs = dict(dedup[k].get("attributes") or {})
+                        merged_attrs.update(row["attributes"])
+                        row["attributes"] = merged_attrs
+                    dedup[k] = row
+                else:
+                    dedup[id(row)] = row
+            data = list(dedup.values())
+
         headers = {**self.headers, "Prefer": f"resolution=merge-duplicates,return=representation"}
         res = self.client.post(f"/{table}?on_conflict={on_conflict}", json=data, headers=headers)
         if res.status_code in [200, 201, 204]:

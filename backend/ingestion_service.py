@@ -232,6 +232,19 @@ class IngestionService:
                 "attributes": attributes
             })
 
+        # Deduplicate batch by phone_number to prevent Postgres error 21000
+        dedup_contacts = {}
+        for c in contacts_payload:
+            p = c["phone_number"]
+            if p in dedup_contacts:
+                merged_attrs = dict(dedup_contacts[p].get("attributes") or {})
+                merged_attrs.update(c.get("attributes") or {})
+                c["attributes"] = merged_attrs
+                if not c.get("name") and dedup_contacts[p].get("name"):
+                    c["name"] = dedup_contacts[p]["name"]
+            dedup_contacts[p] = c
+        contacts_payload = list(dedup_contacts.values())
+
         inserted = 0
         if contacts_payload:
             try:
