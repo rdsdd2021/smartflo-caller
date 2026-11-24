@@ -180,11 +180,23 @@ class ContactsService:
 
     _distinct_cache: Dict[str, Any] = {}
 
+    @classmethod
+    def invalidate_distinct_cache(cls, field_key: Optional[str] = None):
+        """Invalidates in-memory distinct values cache for a specific field or all fields."""
+        if field_key:
+            prefix = f"{field_key}:"
+            keys_to_del = [k for k in cls._distinct_cache if k.startswith(prefix)]
+            for k in keys_to_del:
+                cls._distinct_cache.pop(k, None)
+        else:
+            cls._distinct_cache.clear()
+
     def get_distinct_field_values(
         self,
         field_key: str,
         limit: int = 2000,
-        search: Optional[str] = None
+        search: Optional[str] = None,
+        refresh: bool = False
     ) -> List[str]:
         """Dynamically fetches distinct existing values for any contact field or JSONB attribute with in-memory caching."""
         if field_key == "last_call_status":
@@ -198,10 +210,10 @@ class ContactsService:
                 return [d for d in all_dtmf if search in d]
             return all_dtmf
 
-        # Fast in-memory cache lookup (5-minute TTL)
+        # Fast in-memory cache lookup (5-minute TTL, bypassed if refresh=True)
         cache_key = f"{field_key}:{search or ''}:{limit}"
         now_ts = time.time()
-        if cache_key in self._distinct_cache:
+        if not refresh and cache_key in self._distinct_cache:
             ts, cached_vals = self._distinct_cache[cache_key]
             if now_ts - ts < 300:
                 return cached_vals
@@ -278,17 +290,24 @@ class ContactsService:
             "display_order": 10
         }
         res = supabase.upsert("contact_fields_meta", payload, on_conflict="field_key")
+        self.invalidate_distinct_cache(field_key)
         return res[0] if res else payload
 
     def update_field_meta(self, field_id: str, updates: Dict[str, Any]) -> bool:
         """Updates an existing datapoint label, options, or filter status."""
         match = {"id": field_id} if (len(field_id) == 36 and "-" in field_id) else {"field_key": field_id}
-        return supabase.update("contact_fields_meta", match, updates)
+        ok = supabase.update("contact_fields_meta", match, updates)
+        if ok:
+            self.invalidate_distinct_cache()
+        return ok
 
     def delete_field_meta(self, field_id: str) -> bool:
         """Removes a custom datapoint definition."""
         match = {"id": field_id} if (len(field_id) == 36 and "-" in field_id) else {"field_key": field_id}
-        return supabase.delete("contact_fields_meta", match)
+        ok = supabase.delete("contact_fields_meta", match)
+        if ok:
+            self.invalidate_distinct_cache()
+        return ok
 
     # -------------------------------------------------------------
     # 2. AUDIENCE FILTER BUILDER & "CHECK COUNT"
@@ -448,7 +467,10 @@ class ContactsService:
             current_attrs.update(updates["attributes"])
             payload["attributes"] = current_attrs
 
-        return supabase.update("contacts", {"id": contact_id}, payload)
+        ok = supabase.update("contacts", {"id": contact_id}, payload)
+        if ok:
+            self.invalidate_distinct_cache()
+        return ok
 
     def create_single_contact(self, phone_number: str, name: Optional[str] = None, attributes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Creates or updates a single contact in the contacts CRM table."""
@@ -465,13 +487,17 @@ class ContactsService:
             "updated_at": now_iso
         }
         res = supabase.upsert("contacts", [payload], on_conflict="phone_number")
+        self.invalidate_distinct_cache()
         if res and isinstance(res, list) and len(res) > 0:
             return res[0]
         return supabase.select_one("contacts", {"phone_number": clean_phone}) or payload
 
     def delete_contact(self, contact_id: str) -> bool:
         """Deletes a contact from the CRM."""
-        return supabase.delete("contacts", {"id": contact_id})
+        ok = supabase.delete("contacts", {"id": contact_id})
+        if ok:
+            self.invalidate_distinct_cache()
+        return ok
 
     # -------------------------------------------------------------
     # 4. BULK CONTACTS UPLOADER (100k - 200k SCALE)

@@ -406,11 +406,70 @@ def get_custom_fields():
 def get_field_distinct_values(
     field: str = Query(...),
     search: Optional[str] = Query(None),
-    limit: int = Query(2000, ge=1, le=5000)
+    limit: int = Query(2000, ge=1, le=5000),
+    refresh: bool = Query(False)
 ):
     return {
         "field": field,
-        "values": contacts_service.get_distinct_field_values(field, limit=limit, search=search)
+        "values": contacts_service.get_distinct_field_values(field, limit=limit, search=search, refresh=refresh)
+    }
+
+@app.post("/api/contacts/inspect-file", tags=["Contacts CRM"], summary="Inspect Upload File Headers and Preview")
+async def inspect_contacts_file(file: UploadFile = File(...)):
+    """Inspects an uploaded CSV or Excel file and returns its column headers and top 3 preview rows."""
+    filename = file.filename or "file.csv"
+    fn = filename.lower()
+
+    content = await file.read(2 * 1024 * 1024)
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    headers = []
+    preview = []
+
+    if fn.endswith((".xlsx", ".xls")):
+        import openpyxl
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            rows_iter = ws.iter_rows(values_only=True)
+            header_row = next(rows_iter, None)
+            if header_row:
+                headers = [str(c or "").strip() for c in header_row if c is not None and str(c).strip()]
+                for row in rows_iter:
+                    if any(row):
+                        preview.append({
+                            headers[i]: str(row[i]).strip() if i < len(row) and row[i] is not None else ""
+                            for i in range(len(headers))
+                        })
+                        if len(preview) >= 3:
+                            break
+            wb.close()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to read Excel workbook: {e}")
+    else:
+        try:
+            text = content.decode("utf-8", errors="replace")
+            reader = csv.reader(io.StringIO(text))
+            header_row = next(reader, None)
+            if header_row:
+                headers = [str(c).strip() for c in header_row if str(c).strip()]
+                for row in reader:
+                    if any(row):
+                        preview.append({
+                            headers[i]: str(row[i]).strip() if i < len(row) and row[i] is not None else ""
+                            for i in range(len(headers))
+                        })
+                        if len(preview) >= 3:
+                            break
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to read CSV file: {e}")
+
+    return {
+        "success": True,
+        "filename": filename,
+        "headers": headers,
+        "preview": preview
     }
 
 @app.post("/api/contacts/fields", tags=["Contacts CRM"], summary="Create New Custom Datapoint Definition")

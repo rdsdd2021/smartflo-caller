@@ -227,8 +227,15 @@ function SearchableCheckboxDropdown({
             )}
 
             {filtered.length === 0 && !isCustomMatchPossible ? (
-              <div className="text-center py-4 text-xs text-slate-400">
-                No matching values found
+              <div className="text-center py-4 px-2 space-y-1">
+                <p className="text-xs font-semibold text-slate-500">
+                  {options.length === 0 ? "No preloaded values found" : "No matching values found"}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  {options.length === 0
+                    ? "Type any value in the search box above and click 'Add', or change operator to 'contains text'."
+                    : "Try searching with a different keyword."}
+                </p>
               </div>
             ) : (
               filtered.map((opt) => {
@@ -337,11 +344,11 @@ export default function AudienceFilterBuilder({
     }
   };
 
-  const fetchFieldValues = async (fieldKey: string) => {
-    if (fieldValuesCache[fieldKey] || loadingFieldValues[fieldKey]) return;
+  const fetchFieldValues = async (fieldKey: string, forceRefresh: boolean = false) => {
+    if (!forceRefresh && (fieldValuesCache[fieldKey] || loadingFieldValues[fieldKey])) return;
     setLoadingFieldValues((prev) => ({ ...prev, [fieldKey]: true }));
     try {
-      const res = await fetch(`${apiBase}/contacts/field-values?field=${encodeURIComponent(fieldKey)}&limit=2000`);
+      const res = await fetch(`${apiBase}/contacts/field-values?field=${encodeURIComponent(fieldKey)}&limit=2000${forceRefresh ? "&refresh=true" : ""}`);
       if (res.ok) {
         const data = await res.json();
         setFieldValuesCache((prev) => ({ ...prev, [fieldKey]: data.values || [] }));
@@ -630,6 +637,17 @@ export default function AudienceFilterBuilder({
                       allowCustom={true}
                     />
                   )}
+
+                  {/* Refresh Field Values Button */}
+                  <button
+                    type="button"
+                    onClick={() => fetchFieldValues(rule.field, true)}
+                    disabled={loadingFieldValues[rule.field]}
+                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors shrink-0"
+                    title="Refresh values from database"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${loadingFieldValues[rule.field] ? "animate-spin text-indigo-600" : ""}`} />
+                  </button>
 
                   {/* Remove Rule Button */}
                   <button

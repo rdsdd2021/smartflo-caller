@@ -564,11 +564,57 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
   };
 
   // Handle Bulk Upload File Change
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadFile(file);
+    setUploadStatus("Analyzing file headers and preview...");
 
+    const applyHeaders = (headers: string[]) => {
+      setFileHeaders(headers);
+      const autoMap: Record<string, string> = {};
+      headers.forEach((h) => {
+        const lower = h.toLowerCase().trim();
+        if (lower.includes("phone") || lower.includes("mobile") || lower.includes("contact")) {
+          autoMap[h] = "phone_number";
+        } else if (lower.includes("name") || lower.includes("student")) {
+          autoMap[h] = "name";
+        } else {
+          const matchedField = fields.find(
+            (f) =>
+              f.label.toLowerCase() === lower ||
+              f.field_key.toLowerCase() === lower ||
+              lower.includes(f.field_key) ||
+              f.field_key.includes(lower)
+          );
+          if (matchedField) {
+            autoMap[h] = matchedField.field_key;
+          } else {
+            autoMap[h] = h.toLowerCase().replace(/[^a-z0-9]/g, "_");
+          }
+        }
+      });
+      setColumnMapping(autoMap);
+      setUploadStatus(null);
+    };
+
+    try {
+      const inspectData = new FormData();
+      inspectData.append("file", file);
+      const res = await fetch(`${apiBase}/contacts/inspect-file`, {
+        method: "POST",
+        body: inspectData
+      });
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.headers) && data.headers.length > 0) {
+        applyHeaders(data.headers);
+        return;
+      }
+    } catch {
+      // Fallback to local text reader for CSV files
+    }
+
+    // Fallback CSV text reader
     const reader = new FileReader();
     reader.onload = (evt) => {
       const text = evt.target?.result as string;
@@ -578,30 +624,7 @@ export default function ContactsCRM({ apiBase, onSelectLead }: ContactsCRMProps)
           .split(",")
           .map((h) => h.replace(/["\r]/g, "").trim())
           .filter(Boolean);
-        setFileHeaders(headers);
-
-        const autoMap: Record<string, string> = {};
-        headers.forEach((h) => {
-          const lower = h.toLowerCase();
-          if (lower.includes("phone") || lower.includes("mobile") || lower.includes("contact")) {
-            autoMap[h] = "phone_number";
-          } else if (lower.includes("name") || lower.includes("student")) {
-            autoMap[h] = "name";
-          } else {
-            const matchedField = fields.find(
-              (f) =>
-                f.label.toLowerCase() === lower ||
-                f.field_key.toLowerCase() === lower ||
-                lower.includes(f.field_key)
-            );
-            if (matchedField) {
-              autoMap[h] = matchedField.field_key;
-            } else {
-              autoMap[h] = h.toLowerCase().replace(/[^a-z0-9]/g, "_");
-            }
-          }
-        });
-        setColumnMapping(autoMap);
+        applyHeaders(headers);
       }
     };
     reader.readAsText(file.slice(0, 10000));

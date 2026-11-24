@@ -161,6 +161,12 @@ class IngestionService:
                 "total_rows": max(total_rows, processed_count)
             })
 
+            # Invalidate cached distinct values so new options immediately appear in filters
+            try:
+                contacts_service.invalidate_distinct_cache()
+            except Exception:
+                pass
+
             self._broadcast_event({
                 "type": "import_job_completed",
                 "job_id": job_id,
@@ -363,26 +369,44 @@ class IngestionService:
                     pass
 
     def _process_campaign_chunk(self, chunk: List[Dict[str, Any]], campaign_id: str, policies: Dict[str, Any]) -> (int, int):
+        from supabase_client import supabase
         candidates = []
+        contacts_to_enrich = []
+
         for r in chunk:
             phone_val = ""
             name_val = ""
+            attributes = {}
+
             for k, v in r.items():
-                k_lower = k.lower()
+                k_lower = str(k).lower().strip()
+                v_str = str(v).strip() if v is not None else ""
+
                 if "phone" in k_lower or "mobile" in k_lower or "contact" in k_lower:
-                    phone_val = str(v or "").strip()
+                    phone_val = v_str
                 elif "name" in k_lower:
-                    name_val = str(v or "").strip()
-                elif not phone_val and any(c.isdigit() for c in str(v or "")):
+                    name_val = v_str
+                elif not phone_val and any(c.isdigit() for c in v_str):
                     # Extract digits if potential phone
-                    dig = clean_phone_digits(str(v or ""))
+                    dig = clean_phone_digits(v_str)
                     if len(dig) >= 10:
                         phone_val = dig
+                elif v_str:
+                    # Clean attribute key (e.g. "Year of Passing" -> "year_of_passing", "Year" -> "year")
+                    clean_k = re.sub(r"[^a-zA-Z0-9_]", "", str(k).strip().lower().replace(" ", "_"))
+                    if clean_k:
+                        attributes[clean_k] = v_str
 
             if phone_val:
                 clean = clean_phone_digits(phone_val)
                 if len(clean) >= 10:
                     candidates.append({"phone_number": clean, "name": name_val})
+                    if attributes:
+                        contacts_to_enrich.append({
+                            "phone_number": clean,
+                            "name": name_val or None,
+                            "attributes": attributes
+                        })
 
         if not candidates:
             return 0, len(chunk)
@@ -392,6 +416,14 @@ class IngestionService:
         if eligible:
             sqlite_batch = [(l["phone_number"], l.get("name", "")) for l in eligible]
             enqueued = database.bulk_insert_leads(campaign_id, sqlite_batch)
+
+        # Enrich Master Contacts in Supabase with custom attributes so custom datapoints are never lost
+        if contacts_to_enrich:
+            try:
+                supabase.upsert("contacts", contacts_to_enrich, on_conflict="phone_number")
+                contacts_service.invalidate_distinct_cache()
+            except Exception as e:
+                print(f"[IngestionService] Campaign chunk contacts enrichment note: {e}")
 
         return enqueued, len(skipped)
 
