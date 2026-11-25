@@ -189,9 +189,10 @@ export default function SmartfloDialerApp() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Navigation & View State
+  // Navigation & View State (persisted across page refreshes via URL & localStorage)
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [campaignTab, setCampaignTab] = useState<"overview" | "settings" | "leads" | "reports" | "webhooks">("overview");
+  const [navHydrated, setNavHydrated] = useState(false);
 
   // System Trunk & Campaigns Data
   const [trunkStatus, setTrunkStatus] = useState<TrunkStatus>({
@@ -220,6 +221,63 @@ export default function SmartfloDialerApp() {
   const [campaignIvrFilter, setCampaignIvrFilter] = useState<string>("all");
   const [campaignSortBy, setCampaignSortBy] = useState<"newest" | "name" | "leads" | "answer_rate" | "concurrency">("newest");
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
+
+  // Restore active view, selected campaign, and campaign tab on mount
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlView = params.get("view");
+      const urlCamp = params.get("campaign");
+      const urlTab = params.get("tab");
+
+      if (urlView === "crm" || urlView === "campaigns") {
+        setCurrentAppView(urlView);
+        if (urlCamp) setSelectedCampaignId(urlCamp);
+        if (urlTab && ["overview", "settings", "leads", "reports", "webhooks"].includes(urlTab)) {
+          setCampaignTab(urlTab as any);
+        }
+      } else {
+        const saved = localStorage.getItem("smartflo_nav_state");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.view === "crm" || parsed.view === "campaigns") {
+            setCurrentAppView(parsed.view);
+          }
+          if (parsed.campaignId) {
+            setSelectedCampaignId(parsed.campaignId);
+          }
+          if (parsed.tab && ["overview", "settings", "leads", "reports", "webhooks"].includes(parsed.tab)) {
+            setCampaignTab(parsed.tab);
+          }
+        }
+      }
+    } catch {}
+    setNavHydrated(true);
+  }, []);
+
+  // Persist navigation state to URL query params and localStorage
+  useEffect(() => {
+    if (!navHydrated || typeof window === "undefined") return;
+    try {
+      localStorage.setItem(
+        "smartflo_nav_state",
+        JSON.stringify({
+          view: currentAppView,
+          campaignId: selectedCampaignId,
+          tab: campaignTab
+        })
+      );
+      const params = new URLSearchParams();
+      params.set("view", currentAppView);
+      if (currentAppView === "campaigns" && selectedCampaignId) {
+        params.set("campaign", selectedCampaignId);
+        params.set("tab", campaignTab);
+      }
+      const nextUrl = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState(null, "", nextUrl);
+    } catch {}
+  }, [navHydrated, currentAppView, selectedCampaignId, campaignTab]);
 
   // Modals
   const [isNewCampaignOpen, setIsNewCampaignOpen] = useState(false);
@@ -545,6 +603,12 @@ export default function SmartfloDialerApp() {
   const fetchCampaignDetail = async (cid: string, syncForm = false) => {
     try {
       const res = await fetch(`${API_BASE}/campaigns/${cid}`);
+      if (res.status === 404) {
+        if (selectedCampaignIdRef.current === cid) {
+          setSelectedCampaignId(null);
+        }
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         if (selectedCampaignIdRef.current !== cid) return;

@@ -20,15 +20,29 @@ def _get_jwt_secret() -> str:
     if env_secret and len(env_secret.strip()) >= 16:
         return env_secret.strip()
 
-    secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".jwt_secret")
+    # Prefer persistent volume directory (e.g. /app/data in Docker) so sessions survive container rebuilds
+    db_path = os.environ.get("DATABASE_PATH", "")
+    secret_dir = os.path.dirname(os.path.abspath(db_path)) if db_path else os.path.dirname(os.path.abspath(__file__))
     try:
-        if os.path.exists(secret_file):
-            with open(secret_file, "r") as f:
-                s = f.read().strip()
-                if len(s) >= 32:
-                    return s
+        os.makedirs(secret_dir, exist_ok=True)
     except Exception:
-        pass
+        secret_dir = os.path.dirname(os.path.abspath(__file__))
+
+    secret_file = os.path.join(secret_dir, ".jwt_secret")
+    legacy_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".jwt_secret")
+
+    for candidate in (secret_file, legacy_file):
+        try:
+            if os.path.exists(candidate):
+                with open(candidate, "r") as f:
+                    s = f.read().strip()
+                    if len(s) >= 32:
+                        if candidate != secret_file:
+                            with open(secret_file, "w") as wf:
+                                wf.write(s)
+                        return s
+        except Exception:
+            pass
 
     new_secret = secrets.token_hex(32)
     try:
@@ -39,7 +53,7 @@ def _get_jwt_secret() -> str:
     return new_secret
 
 JWT_SECRET = _get_jwt_secret()
-TOKEN_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "24"))
+TOKEN_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "168"))  # 7 days default
 
 def validate_password_strength(password: str) -> Tuple[bool, str]:
     """Enforces enterprise password requirements: min 8 characters with letters and numbers."""

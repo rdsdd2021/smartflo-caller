@@ -55,9 +55,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   useEffect(() => {
-    // Read token on initial load
+    // Read token on initial load (localStorage primary, cookie fallback)
     try {
-      const storedToken = localStorage.getItem("smartflo_token");
+      let storedToken = localStorage.getItem("smartflo_token");
+      if (!storedToken && typeof document !== "undefined") {
+        const match = document.cookie.match(/(?:^|;\s*)smartflo_token=([^;]+)/);
+        if (match) {
+          storedToken = decodeURIComponent(match[1]);
+          localStorage.setItem("smartflo_token", storedToken);
+        }
+      }
       if (storedToken) {
         setToken(storedToken);
         verifyAndFetchUser(storedToken);
@@ -70,9 +77,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isLoading) {
       if (!user && pathname !== "/login") {
+        try {
+          const currentDest = window.location.pathname + window.location.search;
+          if (currentDest && currentDest !== "/login") {
+            sessionStorage.setItem("smartflo_redirect_after_login", currentDest);
+          }
+        } catch {}
         router.push("/login");
       } else if (user && pathname === "/login") {
-        router.push("/");
+        let target = "/";
+        try {
+          const saved = sessionStorage.getItem("smartflo_redirect_after_login");
+          if (saved && saved !== "/login") {
+            target = saved;
+            sessionStorage.removeItem("smartflo_redirect_after_login");
+          }
+        } catch {}
+        router.push(target);
       }
     }
   }, [user, isLoading, pathname]);
@@ -88,12 +109,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
-      } else {
-        // Token expired or invalid
+      } else if (res.status === 401) {
+        // Only log out when backend explicitly rejects token as invalid/expired
         logout();
       }
     } catch {
-      // Offline fallback: keep token but set loading false
+      // Transient network / server restart error: preserve token without logging out
     } finally {
       setIsLoading(false);
     }
@@ -115,7 +136,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.setItem("smartflo_token", data.access_token);
           document.cookie = `smartflo_token=${data.access_token}; path=/; max-age=604800; SameSite=Lax`;
         } catch {}
-        router.push("/");
+        let target = "/";
+        try {
+          const saved = sessionStorage.getItem("smartflo_redirect_after_login");
+          if (saved && saved !== "/login") {
+            target = saved;
+            sessionStorage.removeItem("smartflo_redirect_after_login");
+          }
+        } catch {}
+        router.push(target);
         return { success: true };
       }
       return { success: false, error: data.detail || "Invalid login credentials." };
