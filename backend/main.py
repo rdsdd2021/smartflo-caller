@@ -41,9 +41,15 @@ from models import (
     WebhookSubscriptionCreateRequest,
     WebhookSubscriptionToggleRequest,
     WebhookTestRequest,
-    SmartfloInboundWebhookModel
+    SmartfloInboundWebhookModel,
+    APIKeyCreateRequest,
+    APIKeyToggleRequest,
+    InboundPushLeadRequest,
+    InboundBulkLeadsRequest,
+    InboundCallNowRequest
 )
 from auth_service import auth_service, create_access_token, decode_access_token
+from api_key_service import api_key_service
 from contacts_service import contacts_service
 from webhook_service import webhook_service
 from queue_worker import campaign_engine, TOTAL_TRUNK_CAPACITY
@@ -124,7 +130,26 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    """Enforces enterprise security headers across all HTTP responses."""
+    """Enforces enterprise security headers and scoped external API key authorization."""
+    # Check if caller supplied an external API key (X-API-Key header, Bearer sf_live_..., or ?api_key=...)
+    raw_api_key = request.headers.get("x-api-key") or request.query_params.get("api_key")
+    if not raw_api_key:
+        auth_hdr = request.headers.get("authorization", "")
+        if auth_hdr.lower().startswith("bearer sf_live_"):
+            raw_api_key = auth_hdr[7:].strip()
+
+    if raw_api_key:
+        allowed, err_msg, key_rec = api_key_service.validate_and_authorize(
+            raw_api_key, request.method, request.url.path
+        )
+        if not allowed:
+            status_code = 403 if key_rec else 401
+            return JSONResponse(
+                status_code=status_code,
+                content={"success": False, "detail": err_msg or "Unauthorized API key"}
+            )
+        request.state.api_key = key_rec
+
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -331,26 +356,31 @@ async def smartflo_webhook_listener(request: Request):
     return {"status": "ok", "received": True}
 
 # -------------------------------------------------------------
-# OUTBOUND WEBHOOK SUBSCRIPTIONS
+# OUTBOUND WEBHOOK SUBSCRIPTIONS, DELIVERY LOGS & SCOPED API KEYS
 # -------------------------------------------------------------
+@app.get("/api/webhooks/events", tags=["Webhooks & Integrations"], summary="List All Supported Webhook Events")
+def list_webhook_events():
+    """Returns the full catalog of supported platform and campaign-wise webhook events."""
+    return {"events": webhook_service.get_event_catalog()}
+
 @app.get("/api/webhooks/subscriptions", tags=["Webhooks & Integrations"], summary="List Webhook Subscriptions")
-def list_webhook_subscriptions():
-    """Returns all registered outbound webhook subscriptions with target events and active status."""
-    return {"subscriptions": webhook_service.list_subscriptions()}
+def list_webhook_subscriptions(campaign_id: Optional[str] = Query(None)):
+    """Returns registered outbound webhook subscriptions (all, or filtered by campaign_id)."""
+    return {"subscriptions": webhook_service.list_subscriptions(campaign_id=campaign_id)}
 
 @app.post("/api/webhooks/subscriptions", tags=["Webhooks & Integrations"], summary="Create Webhook Subscription")
 def create_webhook_subscription(payload: WebhookSubscriptionCreateRequest):
     """
-    Registers a new webhook URL to receive outbound dialer events.
-    Events can include: `call.completed`, `lead.dtmf_pressed`, `smartflo.callback`, or `*` for all.
-    Optionally pass a secret key to enable HMAC-SHA256 signature verification in the `X-Smartflo-Signature` header.
+    Registers a new global or campaign-specific webhook URL to receive outbound dialer events.
+    Pass `campaign_id` to scope events exclusively to that campaign.
     """
     try:
         sub = webhook_service.create_subscription(
             url=payload.url,
             events=payload.events,
             secret=payload.secret,
-            description=payload.description
+            description=payload.description,
+            campaign_id=payload.campaign_id
         )
         return {"success": True, "subscription": sub}
     except Exception as e:
@@ -372,18 +402,274 @@ def delete_webhook_subscription(sub_id: str):
         raise HTTPException(status_code=404, detail="Webhook subscription not found")
     return {"success": True}
 
+@app.get("/api/webhooks/deliveries", tags=["Webhooks & Integrations"], summary="List Webhook Delivery Logs")
+def list_webhook_deliveries(
+    subscription_id: Optional[str] = Query(None),
+    campaign_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200)
+):
+    """Returns recent webhook delivery attempts with status codes, latency, and payloads."""
+    return {
+        "deliveries": webhook_service.list_deliveries(
+            subscription_id=subscription_id,
+            campaign_id=campaign_id,
+            status=status,
+            limit=limit
+        )
+    }
+
+@app.post("/api/webhooks/deliveries/{delivery_id}/replay", tags=["Webhooks & Integrations"], summary="Replay Failed Webhook Delivery")
+def replay_webhook_delivery(delivery_id: str):
+    """Re-sends a previous webhook delivery payload to its target endpoint."""
+    res = webhook_service.replay_delivery(delivery_id)
+    if not res.get("success") and res.get("error") == "Delivery log not found":
+        raise HTTPException(status_code=404, detail="Delivery log not found")
+    return res
+
 @app.post("/api/webhooks/test", tags=["Webhooks & Integrations"], summary="Test Webhook Endpoint")
 def test_webhook_url(payload: WebhookTestRequest):
     """
-    Sends a sample test event payload to the specified webhook URL.
-    Returns HTTP response status code, latency in milliseconds, and response body snippet.
+    Sends a sample test event payload (including custom CRM datapoints) to the specified webhook URL.
     """
     result = webhook_service.test_webhook_url(
         url=payload.url,
         event=payload.event,
-        secret=payload.secret
+        secret=payload.secret,
+        campaign_id=payload.campaign_id
     )
     return result
+
+# -------------------------------------------------------------
+# SCOPED EXTERNAL API KEYS
+# -------------------------------------------------------------
+@app.get("/api/keys", tags=["Webhooks & Integrations"], summary="List External API Keys")
+def list_api_keys():
+    """Lists all generated external API keys with scope, campaign binding, and usage metrics."""
+    return {"keys": api_key_service.list_keys()}
+
+@app.post("/api/keys", tags=["Webhooks & Integrations"], summary="Create Scoped API Key")
+def create_api_key(payload: APIKeyCreateRequest):
+    """Creates a new external API key (`full`, `read_only`, or `campaign_only`). Raw key is returned once."""
+    try:
+        key_rec = api_key_service.create_key(
+            name=payload.name,
+            scope=payload.scope,
+            campaign_id=payload.campaign_id,
+            expires_days=payload.expires_days
+        )
+        return {"success": True, "api_key": key_rec}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/keys/{key_id}/toggle", tags=["Webhooks & Integrations"], summary="Enable or Disable API Key")
+def toggle_api_key(key_id: str, payload: APIKeyToggleRequest):
+    ok = api_key_service.toggle_key(key_id, payload.is_active)
+    if not ok:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"success": True, "is_active": payload.is_active}
+
+@app.delete("/api/keys/{key_id}", tags=["Webhooks & Integrations"], summary="Revoke API Key")
+def delete_api_key(key_id: str):
+    ok = api_key_service.delete_key(key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"success": True}
+
+# -------------------------------------------------------------
+# INBOUND AUTOMATION TRIGGERS (ZAPIER / MAKE / N8N / CRM)
+# -------------------------------------------------------------
+@app.post("/api/inbound/campaigns/{campaign_id}/push-lead", tags=["Webhooks & Integrations"], summary="Inbound Trigger: Push Lead to Campaign")
+async def inbound_push_lead(campaign_id: str, request: Request):
+    """
+    Universal inbound webhook/API trigger for Zapier, Make, n8n, Google Forms, or external CRMs.
+    Accepts JSON or form payload with `phone_number` (or `phone`/`mobile`), `name`, optional `attributes` dict
+    (any extra flat fields automatically become custom CRM attributes), and optional `trigger_call_immediately`.
+    """
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        raw_body = await request.json()
+    except Exception:
+        form = await request.form()
+        raw_body = dict(form)
+
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    phone_raw = raw_body.get("phone_number") or raw_body.get("phone") or raw_body.get("mobile") or ""
+    from contacts_service import sanitize_phone
+    clean_phone = sanitize_phone(str(phone_raw))
+    if not clean_phone:
+        raise HTTPException(status_code=400, detail="Valid phone_number is required")
+
+    name_val = str(raw_body.get("name") or raw_body.get("student_name") or "").strip()
+    trigger_now = bool(raw_body.get("trigger_call_immediately", False))
+    force_override = bool(raw_body.get("force_override", False))
+
+    reserved_keys = {
+        "phone_number", "phone", "mobile", "name", "student_name",
+        "attributes", "trigger_call_immediately", "force_override", "api_key"
+    }
+    attrs: Dict[str, Any] = {}
+    if isinstance(raw_body.get("attributes"), dict):
+        attrs.update(raw_body["attributes"])
+    for k, v in raw_body.items():
+        if k not in reserved_keys and v is not None and str(v).strip() != "":
+            clean_k = "".join(c if c.isalnum() or c == "_" else "_" for c in str(k).strip().lower().replace(" ", "_"))
+            if clean_k:
+                attrs[clean_k] = str(v).strip()
+
+    # Upsert into Master Contacts CRM
+    try:
+        contacts_service.create_single_contact(
+            phone_number=clean_phone,
+            name=name_val or None,
+            attributes=attrs
+        )
+    except Exception as e:
+        print(f"[InboundTrigger] Contact upsert notice: {e}")
+
+    policies = {
+        "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
+        "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
+        "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
+        "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
+        "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
+        "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
+        "force_override": force_override
+    }
+    eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(
+        [{"phone_number": clean_phone, "name": name_val}], campaign_id, policies
+    )
+    enqueued_count = 0
+    if eligible:
+        enqueued_count = database.bulk_insert_leads(
+            campaign_id, [(l["phone_number"], l.get("name", "")) for l in eligible]
+        )
+        webhook_service.dispatch_event("lead.added", {
+            "campaign_id": campaign_id,
+            "campaign_name": camp.get("name"),
+            "source": "inbound_api",
+            "phone_number": clean_phone,
+            "name": name_val,
+            "attributes": attrs,
+            "count": enqueued_count
+        }, campaign_id=campaign_id)
+
+    call_result = None
+    if trigger_now:
+        did = camp.get("single_did") or (config.active_dids[0] if config.active_dids else "917965561295")
+        call_result = smartflo_client.initiate_call(clean_phone, did, camp.get("api_key"))
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "phone_number": clean_phone,
+        "enqueued": enqueued_count,
+        "skipped": len(skipped),
+        "summary": summary,
+        "call_triggered": call_result
+    }
+
+@app.post("/api/inbound/campaigns/{campaign_id}/push-leads-bulk", tags=["Webhooks & Integrations"], summary="Inbound Trigger: Bulk Push Leads to Campaign")
+def inbound_push_leads_bulk(campaign_id: str, payload: InboundBulkLeadsRequest):
+    """Batch-pushes up to 5,000 leads with custom attributes from external CRMs into a campaign."""
+    camp = database.get_campaign(campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if not payload.leads:
+        raise HTTPException(status_code=400, detail="leads list cannot be empty")
+
+    from contacts_service import sanitize_phone
+    from supabase_client import supabase
+    candidates = []
+    crm_batch = []
+    for item in payload.leads[:5000]:
+        p_raw = item.get("phone_number") or item.get("phone") or item.get("mobile") or ""
+        clean_p = sanitize_phone(str(p_raw))
+        if not clean_p:
+            continue
+        nm = str(item.get("name") or "").strip()
+        attrs = dict(item.get("attributes") or {})
+        for k, v in item.items():
+            if k not in ("phone_number", "phone", "mobile", "name", "attributes") and v is not None and str(v).strip():
+                attrs[k.strip().lower().replace(" ", "_")] = str(v).strip()
+        candidates.append({"phone_number": clean_p, "name": nm})
+        crm_batch.append({"phone_number": clean_p, "name": nm or None, "attributes": attrs})
+
+    if crm_batch:
+        try:
+            supabase.upsert("contacts", crm_batch, on_conflict="phone_number")
+            contacts_service.invalidate_distinct_cache()
+        except Exception:
+            pass
+
+    policies = {
+        "dedup_intra_campaign": camp.get("dedup_intra_campaign", 1) == 1,
+        "dedup_cross_active": camp.get("dedup_cross_active", 1) == 1,
+        "enable_cooldown": camp.get("enable_cooldown", 1) == 1,
+        "cooldown_answered_hours": camp.get("cooldown_answered_hours", 24),
+        "cooldown_missed_hours": camp.get("cooldown_missed_hours", 2),
+        "exclude_dnd": camp.get("exclude_dnd", 1) == 1,
+        "force_override": bool(payload.force_override)
+    }
+    eligible, skipped, summary = contacts_service.evaluate_lead_eligibility(candidates, campaign_id, policies)
+    enqueued = 0
+    if eligible:
+        enqueued = database.bulk_insert_leads(campaign_id, [(l["phone_number"], l.get("name", "")) for l in eligible])
+        webhook_service.dispatch_event("lead.added", {
+            "campaign_id": campaign_id,
+            "campaign_name": camp.get("name"),
+            "source": "inbound_bulk_api",
+            "count": enqueued
+        }, campaign_id=campaign_id)
+
+    return {"success": True, "enqueued": enqueued, "skipped": len(skipped), "summary": summary}
+
+@app.post("/api/inbound/call-now", tags=["Webhooks & Integrations"], summary="Inbound Trigger: Instant 1-to-1 Outbound Call")
+def inbound_call_now(payload: InboundCallNowRequest, request: Request):
+    """Places an instant 1-to-1 outbound call via Smartflo and logs/enriches the contact."""
+    from contacts_service import sanitize_phone
+    clean_phone = sanitize_phone(payload.phone_number)
+    if not clean_phone:
+        raise HTTPException(status_code=400, detail="Valid phone_number is required")
+
+    # Enforce campaign_only API key scope if applicable
+    key_rec = getattr(request.state, "api_key", None)
+    target_cid = payload.campaign_id
+    if key_rec and key_rec.get("scope") == "campaign_only":
+        allowed_cid = key_rec.get("campaign_id")
+        if target_cid and target_cid != allowed_cid:
+            raise HTTPException(status_code=403, detail=f"API key is scoped exclusively to campaign '{allowed_cid}'.")
+        target_cid = allowed_cid
+
+    camp = database.get_campaign(target_cid) if target_cid else None
+    if payload.attributes or payload.name:
+        try:
+            contacts_service.create_single_contact(
+                phone_number=clean_phone,
+                name=payload.name or None,
+                attributes=payload.attributes or {}
+            )
+        except Exception:
+            pass
+
+    did = payload.did or (camp.get("single_did") if camp else None) or (config.active_dids[0] if config.active_dids else "917965561295")
+    api_key = camp.get("api_key") if camp else None
+    call_res = smartflo_client.initiate_call(clean_phone, did, api_key)
+    if call_res.get("success"):
+        webhook_service.dispatch_event("call.ringing", {
+            "campaign_id": target_cid,
+            "campaign_name": camp.get("name") if camp else "Instant API Call",
+            "phone_number": clean_phone,
+            "name": payload.name,
+            "did_used": did,
+            "ref_id": call_res.get("ref_id")
+        }, campaign_id=target_cid)
+    return call_res
 
 # -------------------------------------------------------------
 # GLOBAL TRUNK & SYSTEM OVERVIEW
@@ -479,6 +765,7 @@ def create_custom_field(payload: CreateFieldMetaRequest):
         field_type=payload.field_type,
         options=payload.options
     )
+    webhook_service.dispatch_event("datapoint.created", {"field": field})
     return {"success": True, "field": field}
 
 @app.put("/api/contacts/fields/{field_id}", tags=["Contacts CRM"], summary="Update Custom Datapoint Definition")
@@ -526,6 +813,7 @@ def create_contact(payload: CreateContactRequest):
             name=payload.name,
             attributes=payload.attributes
         )
+        webhook_service.dispatch_event("contact.created", {"contact": contact, "phone_number": contact.get("phone_number")})
         return {"success": True, "contact": contact}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -534,11 +822,15 @@ def create_contact(payload: CreateContactRequest):
 def update_contact(contact_id: str, payload: UpdateContactRequest):
     updates = payload.model_dump(exclude_unset=True)
     ok = contacts_service.update_contact(contact_id, updates)
+    if ok:
+        webhook_service.dispatch_event("contact.updated", {"contact_id": contact_id, "updates": updates})
     return {"success": ok}
 
 @app.delete("/api/contacts/{contact_id}", tags=["Contacts CRM"], summary="Delete Single Contact")
 def delete_contact(contact_id: str):
     ok = contacts_service.delete_contact(contact_id)
+    if ok:
+        webhook_service.dispatch_event("contact.deleted", {"contact_id": contact_id})
     return {"success": ok}
 
 @app.get("/api/contacts/sample-template", tags=["Contacts CRM"], summary="Download Sample Contacts Template")
@@ -753,6 +1045,11 @@ def create_new_campaign(payload: CreateCampaignRequest):
 
     # Register in engine
     campaign_engine.get_runner(camp["id"])
+    webhook_service.dispatch_event("campaign.created", {
+        "campaign_id": camp["id"],
+        "campaign_name": camp.get("name"),
+        "total_leads": camp.get("total_leads", 0)
+    }, campaign_id=camp["id"])
     return {"success": True, "campaign": camp, "ingestion_summary": ingestion_summary}
 
 @app.get("/api/campaigns/{campaign_id}")
@@ -797,6 +1094,11 @@ def update_campaign(campaign_id: str, payload: UpdateCampaignRequest):
         runner.set_concurrency(updates["concurrency"])
         campaign_engine.rebalance_channels()
     runner.campaign_data.update(camp)
+    webhook_service.dispatch_event("campaign.settings_updated", {
+        "campaign_id": campaign_id,
+        "campaign_name": camp.get("name"),
+        "updates": updates
+    }, campaign_id=campaign_id)
     return {"success": True, "campaign": camp}
 
 @app.delete("/api/campaigns/{campaign_id}")
@@ -808,6 +1110,7 @@ def delete_campaign(campaign_id: str):
     database.delete_campaign(campaign_id)
     if campaign_id in campaign_engine.runners:
         del campaign_engine.runners[campaign_id]
+    webhook_service.dispatch_event("campaign.deleted", {"campaign_id": campaign_id}, campaign_id=campaign_id)
     return {"success": True, "message": "Campaign and leads deleted"}
 
 # -------------------------------------------------------------
@@ -917,6 +1220,12 @@ def import_text(campaign_id: str, payload: ImportNumbersRequest):
     if eligible:
         sqlite_batch = [(l["phone_number"], l["name"]) for l in eligible]
         count = database.bulk_insert_leads(campaign_id, sqlite_batch)
+        webhook_service.dispatch_event("lead.added", {
+            "campaign_id": campaign_id,
+            "campaign_name": camp.get("name"),
+            "source": "raw_text",
+            "count": count
+        }, campaign_id=campaign_id)
     return {"success": True, "count": count, "imported_leads": count, "summary": summary}
 
 @app.post("/api/campaigns/{campaign_id}/upload-file")
@@ -989,6 +1298,7 @@ def inspect_campaign_sheet(campaign_id: str, payload: GoogleSheetConnectRequest)
 @app.post("/api/campaigns/{campaign_id}/clear")
 def clear_leads(campaign_id: str):
     database.clear_campaign_leads(campaign_id)
+    webhook_service.dispatch_event("campaign.leads_cleared", {"campaign_id": campaign_id}, campaign_id=campaign_id)
     return {"success": True, "message": "All leads cleared"}
 
 @app.delete("/api/campaigns/{campaign_id}/leads/{lead_id}")
@@ -996,6 +1306,7 @@ def delete_single_lead(campaign_id: str, lead_id: str):
     success = database.delete_lead(campaign_id, lead_id)
     if not success:
         raise HTTPException(status_code=404, detail="Lead not found")
+    webhook_service.dispatch_event("lead.deleted", {"campaign_id": campaign_id, "lead_id": lead_id}, campaign_id=campaign_id)
     return {"success": True, "message": "Lead deleted successfully"}
 
 @app.post("/api/campaigns/{campaign_id}/import-sheet")

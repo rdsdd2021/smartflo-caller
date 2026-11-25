@@ -176,6 +176,18 @@ class IngestionService:
                 "inserted": inserted_count,
                 "skipped": skipped_count
             })
+            try:
+                from webhook_service import webhook_service
+                webhook_service.dispatch_event("import.completed", {
+                    "job_id": job_id,
+                    "job_type": "contacts",
+                    "filename": filename,
+                    "total_rows": max(total_rows, processed_count),
+                    "inserted_rows": inserted_count,
+                    "skipped_rows": skipped_count
+                })
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[IngestionService] Ingestion failed for job {job_id}: {e}")
@@ -189,6 +201,16 @@ class IngestionService:
                 "status": "failed",
                 "error": str(e)
             })
+            try:
+                from webhook_service import webhook_service
+                webhook_service.dispatch_event("import.failed", {
+                    "job_id": job_id,
+                    "job_type": "contacts",
+                    "filename": filename,
+                    "error": str(e)
+                })
+            except Exception:
+                pass
         finally:
             if os.path.exists(file_path):
                 try:
@@ -360,6 +382,26 @@ class IngestionService:
                 "enqueued": enqueued_count,
                 "skipped": skipped_count
             })
+            try:
+                from webhook_service import webhook_service
+                webhook_service.dispatch_event("import.completed", {
+                    "job_id": job_id,
+                    "job_type": "campaign_leads",
+                    "campaign_id": campaign_id,
+                    "filename": filename,
+                    "total_rows": max(total_rows, processed_count),
+                    "enqueued": enqueued_count,
+                    "skipped": skipped_count
+                }, campaign_id=campaign_id)
+                if enqueued_count > 0:
+                    webhook_service.dispatch_event("lead.added", {
+                        "campaign_id": campaign_id,
+                        "source": "file_upload",
+                        "filename": filename,
+                        "count": enqueued_count
+                    }, campaign_id=campaign_id)
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[IngestionService] Campaign ingestion failed for {job_id}: {e}")
@@ -374,6 +416,17 @@ class IngestionService:
                 "status": "failed",
                 "error": str(e)
             })
+            try:
+                from webhook_service import webhook_service
+                webhook_service.dispatch_event("import.failed", {
+                    "job_id": job_id,
+                    "job_type": "campaign_leads",
+                    "campaign_id": campaign_id,
+                    "filename": filename,
+                    "error": str(e)
+                }, campaign_id=campaign_id)
+            except Exception:
+                pass
         finally:
             if os.path.exists(file_path):
                 try:

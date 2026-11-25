@@ -203,6 +203,20 @@ class CampaignRunner:
         if self.status != "stopped":
             self.status = "completed"
             database.update_campaign_status(self.campaign_id, "completed")
+            try:
+                from webhook_service import webhook_service
+                camp_info = database.get_campaign(self.campaign_id) or {}
+                webhook_service.dispatch_event("campaign.completed", {
+                    "campaign_id": self.campaign_id,
+                    "campaign_name": camp_info.get("name") or self.campaign_data.get("name"),
+                    "status": "completed",
+                    "total_leads": camp_info.get("total_leads", 0),
+                    "completed_leads": camp_info.get("completed_leads", 0),
+                    "answered_leads": camp_info.get("answered_leads", 0),
+                    "missed_leads": camp_info.get("missed_leads", 0)
+                }, campaign_id=self.campaign_id)
+            except Exception:
+                pass
 
         database.sync_campaign_counters(self.campaign_id)
         # Dynamically rebalance remaining running campaigns
@@ -325,6 +339,19 @@ class CampaignRunner:
                 ref_id = call_res.get("ref_id", "")
                 slot.state = ChannelState.RINGING
                 database.update_lead(lead_id, {"ref_id": ref_id, "status": "ringing"})
+                try:
+                    from webhook_service import webhook_service
+                    webhook_service.dispatch_event("call.ringing", {
+                        "campaign_id": self.campaign_id,
+                        "campaign_name": self.campaign_data.get("name") or "Campaign",
+                        "lead_id": lead_id,
+                        "phone_number": phone,
+                        "name": lead.get("name"),
+                        "did_used": did,
+                        "ref_id": ref_id
+                    }, campaign_id=self.campaign_id)
+                except Exception:
+                    pass
                 await ws_manager.broadcast({
                     "type": "slot_change",
                     "campaign_id": self.campaign_id,
@@ -490,9 +517,10 @@ class CampaignRunner:
                 # Dispatch Outbound Webhooks for subscribers
                 try:
                     from webhook_service import webhook_service
-                    webhook_service.dispatch_event("call.completed", {
+                    call_payload = {
                         "campaign_id": self.campaign_id,
                         "campaign_name": self.campaign_data.get("name") or "Campaign",
+                        "lead_id": lead_id,
                         "phone_number": phone,
                         "name": lead.get("name"),
                         "status": final_status,
@@ -501,17 +529,24 @@ class CampaignRunner:
                         "did_used": did,
                         "call_time": call_time_str or call_time,
                         "recording_url": cdr_record.get("recording_url") if cdr_record else None
-                    })
+                    }
+                    webhook_service.dispatch_event("call.completed", call_payload, campaign_id=self.campaign_id)
+                    if final_status in ["answered", "completed"]:
+                        webhook_service.dispatch_event("call.answered", call_payload, campaign_id=self.campaign_id)
+                    else:
+                        webhook_service.dispatch_event("call.missed", call_payload, campaign_id=self.campaign_id)
                     if dtmf_pressed:
                         webhook_service.dispatch_event("lead.dtmf_pressed", {
                             "campaign_id": self.campaign_id,
                             "campaign_name": self.campaign_data.get("name") or "Campaign",
+                            "lead_id": lead_id,
                             "phone_number": phone,
                             "name": lead.get("name"),
                             "dtmf": dtmf_pressed,
                             "duration": final_duration,
+                            "did_used": did,
                             "call_time": call_time_str or call_time
-                        })
+                        }, campaign_id=self.campaign_id)
                 except Exception:
                     pass
 
@@ -701,6 +736,17 @@ class MultiCampaignEngine:
         # Automatically calculate and apply fair channel distribution across the 15-channel trunk
         self.rebalance_channels()
 
+        try:
+            from webhook_service import webhook_service
+            webhook_service.dispatch_event("campaign.started", {
+                "campaign_id": campaign_id,
+                "campaign_name": runner.campaign_data.get("name"),
+                "status": "running",
+                "allocated_channels": runner.concurrency
+            }, campaign_id=campaign_id)
+        except Exception:
+            pass
+
         return {
             "success": True, 
             "status": "running", 
@@ -712,12 +758,31 @@ class MultiCampaignEngine:
         runner = self.get_runner(campaign_id)
         runner.pause()
         self.rebalance_channels()
+        try:
+            from webhook_service import webhook_service
+            webhook_service.dispatch_event("campaign.paused", {
+                "campaign_id": campaign_id,
+                "campaign_name": runner.campaign_data.get("name"),
+                "status": runner.status
+            }, campaign_id=campaign_id)
+        except Exception:
+            pass
         return {"success": True, "status": runner.status}
 
     def resume_campaign(self, campaign_id: str) -> Dict[str, Any]:
         runner = self.get_runner(campaign_id)
         runner.resume()
         self.rebalance_channels()
+        try:
+            from webhook_service import webhook_service
+            webhook_service.dispatch_event("campaign.started", {
+                "campaign_id": campaign_id,
+                "campaign_name": runner.campaign_data.get("name"),
+                "status": runner.status,
+                "allocated_channels": runner.concurrency
+            }, campaign_id=campaign_id)
+        except Exception:
+            pass
         return {
             "success": True, 
             "status": runner.status,
@@ -729,6 +794,15 @@ class MultiCampaignEngine:
         runner = self.get_runner(campaign_id)
         runner.stop()
         self.rebalance_channels()
+        try:
+            from webhook_service import webhook_service
+            webhook_service.dispatch_event("campaign.stopped", {
+                "campaign_id": campaign_id,
+                "campaign_name": runner.campaign_data.get("name"),
+                "status": runner.status
+            }, campaign_id=campaign_id)
+        except Exception:
+            pass
         return {"success": True, "status": runner.status}
 
     def retry_missed(self, campaign_id: str) -> Dict[str, Any]:

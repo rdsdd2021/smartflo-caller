@@ -99,7 +99,7 @@ def init_db():
         );
         """)
 
-        # Webhook Subscriptions Table
+        # Webhook Subscriptions Table (Global or Campaign-Scoped)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS webhook_subscriptions (
             id TEXT PRIMARY KEY,
@@ -107,11 +107,56 @@ def init_db():
             events TEXT NOT NULL,
             secret TEXT,
             description TEXT,
+            campaign_id TEXT DEFAULT NULL,
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         """)
+        cursor.execute("PRAGMA table_info(webhook_subscriptions);")
+        wh_cols = [r["name"] for r in cursor.fetchall()]
+        if "campaign_id" not in wh_cols:
+            cursor.execute("ALTER TABLE webhook_subscriptions ADD COLUMN campaign_id TEXT DEFAULT NULL;")
+
+        # Webhook Deliveries & Retry Audit Log Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id TEXT PRIMARY KEY,
+            subscription_id TEXT NOT NULL,
+            campaign_id TEXT,
+            event TEXT NOT NULL,
+            url TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'retrying',
+            attempts INTEGER NOT NULL DEFAULT 1,
+            status_code INTEGER,
+            latency_ms INTEGER,
+            response_body TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_wh_deliv_sub_created ON webhook_deliveries (subscription_id, created_at DESC);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_wh_deliv_camp_created ON webhook_deliveries (campaign_id, created_at DESC);")
+
+        # External Scoped API Keys Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            key_prefix TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            scope TEXT NOT NULL DEFAULT 'full',
+            campaign_id TEXT DEFAULT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            last_used_at TEXT,
+            request_count INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash);")
 
         # Check and migrate campaigns table for api_key and dtmf_leads
         cursor.execute("PRAGMA table_info(campaigns);")
@@ -789,17 +834,24 @@ def get_leads_for_export(campaign_id: str, status_filter: str = "all", dtmf_filt
         return [dict(r) for r in rows]
 
 # -------------------------------------------------------------
-# WEBHOOK SUBSCRIPTIONS
+# WEBHOOK SUBSCRIPTIONS, DELIVERIES & SCOPED API KEYS
 # -------------------------------------------------------------
-def create_webhook_sub(url: str, events: List[str], secret: Optional[str] = None, description: Optional[str] = None) -> Dict[str, Any]:
+def create_webhook_sub(
+    url: str,
+    events: List[str],
+    secret: Optional[str] = None,
+    description: Optional[str] = None,
+    campaign_id: Optional[str] = None
+) -> Dict[str, Any]:
     sub_id = f"whk_{uuid.uuid4().hex[:12]}"
     now_iso = datetime.now().isoformat()
     events_json = json.dumps(events)
+    cid = campaign_id.strip() if campaign_id and campaign_id.strip() else None
     with get_connection() as conn:
         conn.execute("""
-            INSERT INTO webhook_subscriptions (id, url, events, secret, description, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-        """, (sub_id, url, events_json, secret or None, description or None, now_iso, now_iso))
+            INSERT INTO webhook_subscriptions (id, url, events, secret, description, campaign_id, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """, (sub_id, url, events_json, secret or None, description or None, cid, now_iso, now_iso))
         conn.commit()
     return {
         "id": sub_id,
@@ -807,14 +859,21 @@ def create_webhook_sub(url: str, events: List[str], secret: Optional[str] = None
         "events": events,
         "secret": secret,
         "description": description,
+        "campaign_id": cid,
         "is_active": True,
         "created_at": now_iso,
         "updated_at": now_iso
     }
 
-def list_webhook_subs() -> List[Dict[str, Any]]:
+def list_webhook_subs(campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM webhook_subscriptions ORDER BY created_at DESC").fetchall()
+        if campaign_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM webhook_subscriptions WHERE campaign_id = ? ORDER BY created_at DESC",
+                (campaign_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM webhook_subscriptions ORDER BY created_at DESC").fetchall()
         subs = []
         for r in rows:
             d = dict(r)
@@ -842,12 +901,16 @@ def toggle_webhook_sub(sub_id: str, is_active: bool) -> bool:
         conn.commit()
         return cursor.rowcount > 0
 
-def get_matching_webhook_subs(event: str) -> List[Dict[str, Any]]:
+def get_matching_webhook_subs(event: str, campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute("SELECT * FROM webhook_subscriptions WHERE is_active = 1").fetchall()
         matching = []
         for r in rows:
             d = dict(r)
+            sub_cid = d.get("campaign_id")
+            # Global subscriptions (sub_cid is None) match all events; campaign subscriptions match only their campaign_id
+            if sub_cid and sub_cid != campaign_id:
+                continue
             try:
                 evs = json.loads(d["events"])
             except Exception:
@@ -857,6 +920,153 @@ def get_matching_webhook_subs(event: str) -> List[Dict[str, Any]]:
                 d["is_active"] = True
                 matching.append(d)
         return matching
+
+def create_webhook_delivery(
+    delivery_id: str,
+    subscription_id: str,
+    event: str,
+    url: str,
+    request_payload: str,
+    campaign_id: Optional[str] = None,
+    status: str = "retrying",
+    attempts: int = 1
+) -> None:
+    now_iso = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO webhook_deliveries
+            (id, subscription_id, campaign_id, event, url, request_payload, status, attempts, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (delivery_id, subscription_id, campaign_id, event, url, request_payload, status, attempts, now_iso, now_iso))
+        conn.commit()
+
+def update_webhook_delivery(
+    delivery_id: str,
+    status: str,
+    attempts: int,
+    status_code: Optional[int] = None,
+    latency_ms: Optional[int] = None,
+    response_body: Optional[str] = None,
+    error_message: Optional[str] = None
+) -> None:
+    now_iso = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute("""
+            UPDATE webhook_deliveries
+            SET status = ?, attempts = ?, status_code = ?, latency_ms = ?, response_body = ?, error_message = ?, updated_at = ?
+            WHERE id = ?
+        """, (status, attempts, status_code, latency_ms, response_body, error_message, now_iso, delivery_id))
+        conn.commit()
+
+def list_webhook_deliveries(
+    subscription_id: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    where = []
+    params: List[Any] = []
+    if subscription_id:
+        where.append("subscription_id = ?")
+        params.append(subscription_id)
+    if campaign_id:
+        where.append("campaign_id = ?")
+        params.append(campaign_id)
+    if status and status != "all":
+        where.append("status = ?")
+        params.append(status)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM webhook_deliveries {where_sql} ORDER BY created_at DESC LIMIT ?",
+            params + [max(1, min(200, limit))]
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def get_webhook_delivery(delivery_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM webhook_deliveries WHERE id = ?", (delivery_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        sub = conn.execute("SELECT * FROM webhook_subscriptions WHERE id = ?", (d["subscription_id"],)).fetchone()
+        d["secret"] = dict(sub).get("secret") if sub else None
+        return d
+
+def create_api_key_record(
+    key_id: str,
+    name: str,
+    key_prefix: str,
+    key_hash: str,
+    scope: str = "full",
+    campaign_id: Optional[str] = None,
+    expires_at: Optional[str] = None
+) -> Dict[str, Any]:
+    now_iso = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    cid = campaign_id.strip() if campaign_id and campaign_id.strip() else None
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO api_keys (id, name, key_prefix, key_hash, scope, campaign_id, is_active, request_count, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+        """, (key_id, name, key_prefix, key_hash, scope, cid, expires_at, now_iso))
+        conn.commit()
+    return {
+        "id": key_id,
+        "name": name,
+        "key_prefix": key_prefix,
+        "scope": scope,
+        "campaign_id": cid,
+        "is_active": True,
+        "request_count": 0,
+        "last_used_at": None,
+        "expires_at": expires_at,
+        "created_at": now_iso
+    }
+
+def list_api_keys() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, name, key_prefix, scope, campaign_id, is_active, last_used_at, request_count, expires_at, created_at FROM api_keys ORDER BY created_at DESC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["is_active"] = bool(d["is_active"])
+            out.append(d)
+        return out
+
+def get_api_key_by_hash(key_hash: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["is_active"] = bool(d["is_active"])
+        return d
+
+def record_api_key_usage(key_id: str) -> None:
+    now_iso = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE api_keys SET request_count = request_count + 1, last_used_at = ? WHERE id = ?",
+            (now_iso, key_id)
+        )
+        conn.commit()
+
+def toggle_api_key(key_id: str, is_active: bool) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = ? WHERE id = ?",
+            (1 if is_active else 0, key_id)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+def delete_api_key(key_id: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 # -------------------------------------------------------------
 # ASYNCHRONOUS INGESTION JOBS REPOSITORY (100K+ SCALE)

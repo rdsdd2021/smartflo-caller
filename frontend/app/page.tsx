@@ -61,6 +61,7 @@ import ContactsCRM from "../components/ContactsCRM";
 import AudienceFilterBuilder, { FilterRule } from "../components/AudienceFilterBuilder";
 import LeadTimelineDrawer from "../components/LeadTimelineDrawer";
 import WebhooksModal from "../components/WebhooksModal";
+import WebhooksAndApiPanel from "../components/WebhooksAndApiPanel";
 import CampaignAudienceFilters from "../components/CampaignAudienceFilters";
 
 const getApiBase = () => {
@@ -190,7 +191,7 @@ export default function SmartfloDialerApp() {
 
   // Navigation & View State
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
-  const [campaignTab, setCampaignTab] = useState<"overview" | "settings" | "leads" | "reports">("overview");
+  const [campaignTab, setCampaignTab] = useState<"overview" | "settings" | "leads" | "reports" | "webhooks">("overview");
 
   // System Trunk & Campaigns Data
   const [trunkStatus, setTrunkStatus] = useState<TrunkStatus>({
@@ -2439,6 +2440,18 @@ export default function SmartfloDialerApp() {
                   <Download className="w-3.5 h-3.5" />
                   <span>Reports & Export</span>
                 </button>
+
+                <button
+                  onClick={() => setCampaignTab("webhooks")}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    campaignTab === "webhooks"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Webhook className="w-3.5 h-3.5" />
+                  <span>Webhooks & API</span>
+                </button>
               </div>
             </div>
 
@@ -3861,6 +3874,18 @@ export default function SmartfloDialerApp() {
                 </div>
               </div>
             )}
+
+            {/* TAB CONTENT 5: CAMPAIGN-WISE WEBHOOKS & API */}
+            {campaignTab === "webhooks" && activeCamp && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs">
+                <WebhooksAndApiPanel
+                  apiBase={API_BASE}
+                  campaignId={activeCamp.id}
+                  campaignName={activeCamp.name}
+                  campaigns={campaigns}
+                />
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -4375,6 +4400,7 @@ export default function SmartfloDialerApp() {
         isOpen={isWebhooksModalOpen}
         onClose={() => setIsWebhooksModalOpen(false)}
         apiBase={API_BASE}
+        campaigns={campaigns}
       />
     </div>
   );

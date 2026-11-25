@@ -260,13 +260,14 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 # -------------------------------------------------------------
-# WEBHOOK MODELS
+# WEBHOOK & API KEY MODELS
 # -------------------------------------------------------------
 class WebhookSubscriptionCreateRequest(BaseModel):
     url: str
     events: List[str] = ["*"]
     secret: Optional[str] = None
     description: Optional[str] = None
+    campaign_id: Optional[str] = None
 
 class WebhookSubscriptionToggleRequest(BaseModel):
     is_active: bool
@@ -275,6 +276,36 @@ class WebhookTestRequest(BaseModel):
     url: str
     event: str = "call.completed"
     secret: Optional[str] = None
+    campaign_id: Optional[str] = None
+
+class APIKeyCreateRequest(BaseModel):
+    name: str
+    scope: str = "full"  # "full", "read_only", "campaign_only"
+    campaign_id: Optional[str] = None
+    expires_days: Optional[int] = None
+
+class APIKeyToggleRequest(BaseModel):
+    is_active: bool
+
+class InboundPushLeadRequest(BaseModel):
+    phone_number: Optional[str] = None
+    phone: Optional[str] = None
+    mobile: Optional[str] = None
+    name: Optional[str] = ""
+    attributes: Optional[Dict[str, Any]] = None
+    trigger_call_immediately: bool = False
+    force_override: bool = False
+
+class InboundBulkLeadsRequest(BaseModel):
+    leads: List[Dict[str, Any]]
+    force_override: bool = False
+
+class InboundCallNowRequest(BaseModel):
+    phone_number: str
+    name: Optional[str] = ""
+    campaign_id: Optional[str] = None
+    did: Optional[str] = None
+    attributes: Optional[Dict[str, Any]] = None
 
 class SmartfloInboundWebhookModel(BaseModel):
     call_id: Optional[str] = None
